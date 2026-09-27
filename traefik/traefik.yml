@@ -6,8 +6,10 @@ global:
 log:
   level: INFO
 
+# Served only on the dashboard entrypoint, which compose publishes on the VPS's loopback address.
+# See dynamic/dashboard.yml.
 api:
-  dashboard: false
+  dashboard: true
 
 entryPoints:
   web:
@@ -19,6 +21,8 @@ entryPoints:
           scheme: https
   websecure:
     address: ":443"
+  dashboard:
+    address: ":8080"
 
 certificatesResolvers:
   letsencrypt:

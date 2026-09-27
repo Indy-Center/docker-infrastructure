@@ -9,6 +9,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      # Dashboard, loopback only: ssh -L 8080:localhost:8080 <user>@<vps>
+      - "127.0.0.1:8080:8080"
     environment:
       CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN:?CF_DNS_API_TOKEN must be set in /opt/traefik/.env}
     volumes:
@@ -19,6 +21,8 @@ services:
       - acme:/letsencrypt
     networks:
       - traefik-shared
+      # Temporary: reaches apps still on the old Traefik's network until DEV-170 moves them.
+      - frontend
     logging:
       driver: json-file
       options:
@@ -30,4 +34,6 @@ volumes:
 
 networks:
   traefik-shared:
+    external: true
+  frontend:
     external: true

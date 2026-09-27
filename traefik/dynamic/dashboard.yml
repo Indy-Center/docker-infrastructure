@@ -1,0 +1,9 @@
+# Dashboard and API on the dashboard entrypoint only. Compose publishes it on 127.0.0.1:8080,
+# so it's reachable through an SSH tunnel and never from the internet.
+http:
+  routers:
+    dashboard:
+      rule: PathPrefix(`/api`) || PathPrefix(`/dashboard`)
+      entryPoints:
+        - dashboard
+      service: api@internal

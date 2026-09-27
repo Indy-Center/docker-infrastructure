@@ -12,7 +12,7 @@ This repository holds Traefik and nothing else. Each app has its own repository,
 - `traefik/`: everything deployed to `/opt/traefik/` on the VPS, and nothing else.
   - `docker-compose.yml`: the Traefik service. Publishes `:80` and `:443`, joins `traefik-shared`, and keeps issued certificates in the `acme` volume.
   - `traefik.yml`: static config, meaning the entrypoints (`web` redirects to `websecure`), the `letsencrypt` DNS-01 resolver and the Docker and file providers.
-  - `dynamic/`: file-provider config. Traefik watches it, so changes apply without a restart. `tls.yml` requests the wildcard certificate.
+  - `dynamic/`: file-provider config. Traefik watches it, so changes apply without a restart. `tls.yml` requests the wildcard certificate, and `dashboard.yml` routes the dashboard.
 - `examples/app/`: what an app's own repository copies to run behind Traefik.
 - `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up.
 - `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs `traefik/` to `/opt/traefik/` and runs `docker compose up -d` over SSH.
@@ -56,6 +56,17 @@ Router names (`myapp` above) must be unique across every app on the box. Keep da
 | `/opt/backups/<app>/` | `deploy` | Staging area for that app's nightly backup before upload |
 
 Docker network `traefik-shared` is created once, by hand (`docker network create traefik-shared`). Every compose project, this one included, treats it as `external: true`.
+
+Traefik also joins `frontend`, the network the previous Traefik used, so apps not yet moved to `traefik-shared` stay reachable after cutover. Once nothing is left on `frontend` (DEV-170), it comes out of `traefik/docker-compose.yml`.
+
+## Dashboard
+
+The dashboard is read-only and listens on the VPS's loopback address only, never on a public port. To open it, tunnel over SSH:
+
+```bash
+ssh -L 8080:localhost:8080 <user>@<vps>
+# then browse to http://localhost:8080/dashboard/
+```
 
 Backups go to the Cloudflare R2 bucket `vanderbelt-backups`, one prefix per app, with a 60-day lifecycle. rclone's R2 credentials live in the `deploy` user's rclone config on the VPS, not in GitHub.
 
