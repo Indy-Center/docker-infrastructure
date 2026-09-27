@@ -6,7 +6,8 @@ services:
   app:
     image: traefik/whoami
     restart: unless-stopped
-    # Runtime secrets live in deploy/.env on the VPS only. It's never in git, and the deploy never touches it.
+    # .env is written on the VPS by the deploy from the repo's ENV_* secrets and variables; it's never in git.
+    # deploy/.env.example lists the names.
     env_file:
       - path: .env
         required: false
