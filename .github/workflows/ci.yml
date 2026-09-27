@@ -1,0 +1,52 @@
+name: CI
+
+# No push trigger: on main, CI runs inside build-and-deploy.yml, so it still runs once per commit.
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Recreate the VPS-side pieces
+        run: |
+          docker network create traefik-shared
+          docker network create frontend
+          echo "CF_DNS_API_TOKEN=ci-dummy-token" > traefik/.env
+          # CI has no real Cloudflare token, so the wildcard request always fails here.
+          # Point it at Let's Encrypt staging so those failures never count against production.
+          sed -i 's|^\( *\)storage: /letsencrypt/acme.json$|&\n\1caServer: https://acme-staging-v02.api.letsencrypt.org/directory|' traefik/traefik.yml
+          grep -q 'caServer: https://acme-staging' traefik/traefik.yml
+
+      - name: Start Traefik and the example app
+        run: |
+          docker compose -f traefik/docker-compose.yml up -d
+          docker compose -f examples/app/docker-compose.yml up -d
+          sleep 15
+
+      - name: Traefik stays up
+        run: |
+          state="$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' traefik)"
+          echo "traefik running/restarts: $state"
+          [ "$state" = "true 0" ]
+
+      - name: Routing works
+        run: |
+          # File provider loaded dynamic/: the dashboard router comes from there.
+          curl -fsS http://127.0.0.1:8080/api/http/routers | grep -q '"dashboard@file"'
+          # web redirects to websecure.
+          code="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: example-app.flyindycenter.com' http://127.0.0.1/)"
+          echo "http status: $code"
+          [ "$code" = 301 ] || [ "$code" = 308 ]
+          # Docker provider routes a labelled app on traefik-shared.
+          curl -fsSk --resolve example-app.flyindycenter.com:443:127.0.0.1 https://example-app.flyindycenter.com/ | grep -q '^Hostname:'
+
+      - name: Traefik logs
+        if: always()
+        run: docker logs traefik
