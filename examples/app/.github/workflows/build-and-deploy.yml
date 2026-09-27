@@ -53,25 +53,31 @@ jobs:
       - name: Sync deploy/ to ~/apps/<app>/
         run: rsync -rlz --delete --exclude=.env --exclude=.env.example deploy/ "vps:apps/$APP/"
 
-      # Every repo secret or variable named ENV_<NAME> becomes NAME='value' in ~/apps/<app>/.env
-      # (a secret wins over a variable with the same name). The deploy owns that file and rewrites it
-      # every time, so a value changes by updating its secret and re-running the deploy, never by
-      # editing the file on the box.
+      # Writes ~/apps/<app>/.env from the ENV_* settings listed below: ENV_<NAME> becomes NAME='value'.
+      # The deploy owns that file and rewrites it every time, so a value changes by updating its secret
+      # or variable and re-running the deploy, never by editing the file on the box.
       - name: Write .env
         env:
-          SECRETS: ${{ toJSON(secrets) }}
-          VARS: ${{ toJSON(vars) }}
+          # One line per setting in deploy/.env.example. secrets.* for real secrets, vars.* for the rest.
+          # Listed by name rather than passing toJSON(secrets): the step only sees what the app needs, and
+          # GitHub flags workflows that hand every secret to a step that talks to another host.
+          ENV_DATABASE_URL: ${{ secrets.ENV_DATABASE_URL }}
+          ENV_LOG_LEVEL: ${{ vars.ENV_LOG_LEVEL }}
         run: |
-          # Single-quoted so Compose takes values literally, $ and # included. That means a value can't
+          # Values are single-quoted so Compose takes them literally, $ and # included. So a value can't
           # contain a single quote or a newline; if one does, this fails before anything reaches the box.
-          env_file="$(jq -rn '
-            (env.VARS | fromjson) + (env.SECRETS | fromjson)
-            | to_entries[]
-            | select(.key | startswith("ENV_"))
-            | if (.value | test("['\n]"))
-              then error("\(.key) contains a single quote or a newline")
-              else "\(.key | ltrimstr("ENV_"))='\(.value)'"
-              end')"
+          # Unset settings arrive empty and are left out, so the app's own defaults apply.
+          filter=$(cat <<'JQ'
+          env | to_entries | sort_by(.key)[]
+          | select(.key | startswith("ENV_"))
+          | select(.value != "")
+          | if (.value | test("['\n]"))
+            then error("\(.key) contains a single quote or a newline")
+            else "\(.key | ltrimstr("ENV_"))='\(.value)'"
+            end
+          JQ
+          )
+          env_file="$(jq -rn "$filter")"
           printf '%s\n' "$env_file" | ssh vps "umask 077 && cat > apps/$APP/.env"
 
       - name: docker compose up -d
