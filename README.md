@@ -83,14 +83,16 @@ It runs on every push to `main`, and by hand from **Actions → Build and Deploy
 
 `staging.yml` (**Actions → Staging certificate check**) runs the real pipeline without touching production. It uses the same secrets, SSH, rsync and `docker compose`, plus the real Cloudflare token. It starts a throwaway Traefik from `staging/` in `~/traefik-staging/` on the VPS, on `127.0.0.1:8443`. That Traefik asks Let's Encrypt **staging** for the wildcard using production's own `dynamic/tls.yml`, and the run passes once it serves a certificate covering `*.flyindycenter.com`. It then removes the container, volume and directory. Run it before any change to certificate settings.
 
-Organization secrets (**Org Settings → Secrets and variables → Actions**). Access is limited to **Selected repositories**: this one, plus each app repository as it moves onto the pipeline. The deploy key can do anything `deploy` can, and `deploy` is in the docker group.
+Organization secrets and variables (**Org Settings → Secrets and variables → Actions**). Access to each is limited to **Selected repositories**: this one, plus each app repository as it moves onto the pipeline. The deploy key can do anything `deploy` can, and `deploy` is in the docker group.
 
-| Secret | Value |
-| ------ | ----- |
-| `VANDERBILT_HOST` | VPS hostname or IP |
-| `VANDERBILT_DEPLOY_USER` | `deploy` |
-| `VANDERBILT_DEPLOY_SSH_KEY` | Private key of the deploy user's key pair |
-| `VANDERBILT_KNOWN_HOSTS` | The VPS's SSH host key line(s), so the runner can check it's talking to the real VPS |
+| Name | Kind | Value |
+| ---- | ---- | ----- |
+| `VANDERBILT_HOST` | variable | VPS hostname or IP |
+| `VANDERBILT_DEPLOY_USER` | variable | `deploy` |
+| `VANDERBILT_DEPLOY_SSH_KEY` | secret | Private key of the deploy user's key pair |
+| `VANDERBILT_KNOWN_HOSTS` | secret | The VPS's SSH host key line(s), so the runner can check it's talking to the real VPS |
+
+The host and user are variables because neither is secret, and GitHub masks a secret's value everywhere it appears in logs. As a secret, `deploy` turned every `deploy/` path in every app's logs into `***/`.
 
 A change to `traefik/traefik.yml` or `traefik/docker-compose.yml` recreates the Traefik container, and every app behind it is briefly unreachable. Changes under `traefik/dynamic/` are picked up live.
 

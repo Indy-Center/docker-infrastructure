@@ -21,8 +21,8 @@ jobs:
 
       - name: Set up SSH
         env:
-          VANDERBILT_HOST: ${{ secrets.VANDERBILT_HOST }}
-          VANDERBILT_DEPLOY_USER: ${{ secrets.VANDERBILT_DEPLOY_USER }}
+          VANDERBILT_HOST: ${{ vars.VANDERBILT_HOST }}
+          VANDERBILT_DEPLOY_USER: ${{ vars.VANDERBILT_DEPLOY_USER }}
           VANDERBILT_DEPLOY_SSH_KEY: ${{ secrets.VANDERBILT_DEPLOY_SSH_KEY }}
           VANDERBILT_KNOWN_HOSTS: ${{ secrets.VANDERBILT_KNOWN_HOSTS }}
         run: |
