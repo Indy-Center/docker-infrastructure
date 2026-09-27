@@ -1,4 +1,4 @@
-# Deployed to /opt/traefik/ on the VPS. /opt/traefik/.env (not in git) holds CF_DNS_API_TOKEN.
+# Deployed to /home/deploy/traefik/ on the VPS. /home/deploy/traefik/.env (not in git) holds CF_DNS_API_TOKEN.
 name: traefik
 
 services:
@@ -12,12 +12,12 @@ services:
       # Dashboard, loopback only: ssh -L 8080:localhost:8080 <user>@<vps>
       - "127.0.0.1:8080:8080"
     environment:
-      CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN:?CF_DNS_API_TOKEN must be set in /opt/traefik/.env}
+      CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN:?CF_DNS_API_TOKEN must be set in /home/deploy/traefik/.env}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
       - ./dynamic:/etc/traefik/dynamic:ro
-      # Named volume, not a file in /opt/traefik/, so deploys can never overwrite or delete issued certs.
+      # Named volume, not a file in /home/deploy/traefik/, so deploys can never overwrite or delete issued certs.
       - acme:/letsencrypt
     networks:
       - traefik-shared

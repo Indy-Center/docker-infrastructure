@@ -1,28 +1,28 @@
 # docker-infrastructure
 
-The Traefik reverse proxy for the Vanderbilt VPS. It terminates TLS for `*.flyindycenter.com` and routes traffic to every app container on the box. GitHub Actions deploys it to `/opt/traefik/` on push to `main`.
+The Traefik reverse proxy for the Vanderbilt VPS. It terminates TLS for `*.flyindycenter.com` and routes traffic to every app container on the box. GitHub Actions deploys it to `/home/deploy/traefik/` on push to `main`.
 
 [![Build and Deploy](https://github.com/Indy-Center/docker-infrastructure/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/Indy-Center/docker-infrastructure/actions/workflows/build-and-deploy.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-This repository holds Traefik and nothing else. Each app has its own repository, its own `ci.yml` / `build-and-deploy.yml`, and its own `docker-compose.yml` under `/opt/apps/<app>/`. It joins Traefik over a shared Docker network.
+This repository holds Traefik and nothing else. Each app has its own repository, its own `ci.yml` / `build-and-deploy.yml`, and its own `docker-compose.yml` under `/home/deploy/apps/<app>/`. It joins Traefik over a shared Docker network.
 
 ## Project layout
 
-- `traefik/`: everything deployed to `/opt/traefik/` on the VPS, and nothing else.
+- `traefik/`: everything deployed to `/home/deploy/traefik/` on the VPS, and nothing else.
   - `docker-compose.yml`: the Traefik service. Publishes `:80` and `:443`, joins `traefik-shared`, and keeps issued certificates in the `acme` volume.
   - `traefik.yml`: static config, meaning the entrypoints (`web` redirects to `websecure`), the `letsencrypt` DNS-01 resolver and the Docker and file providers.
   - `dynamic/`: file-provider config. Traefik watches it, so changes apply without a restart. `tls.yml` requests the wildcard certificate, and `dashboard.yml` routes the dashboard.
 - `examples/app/`: what an app's own repository copies to run behind Traefik.
 - `staging/`: a throwaway Traefik against Let's Encrypt staging, used by `staging.yml` to prove certificate issuance. Never deployed.
 - `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up.
-- `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs `traefik/` to `/opt/traefik/` and runs `docker compose up -d` over SSH.
+- `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH.
 
 ## Certificates
 
 Traefik requests one wildcard certificate, `flyindycenter.com` + `*.flyindycenter.com`, from Let's Encrypt using the DNS-01 challenge through Cloudflare, and serves it as the default certificate. Apps don't request their own. `tls=true` on a router is enough.
 
-The Cloudflare token (`CF_DNS_API_TOKEN`) is a runtime secret. It lives in `/opt/traefik/.env` on the VPS, and Traefik reads it at every renewal. It never appears in this repository or in GitHub Actions. The token is scoped to Zone:DNS:Edit on the one zone and locked to the VPS's IP.
+The Cloudflare token (`CF_DNS_API_TOKEN`) is a runtime secret. It lives in `/home/deploy/traefik/.env` on the VPS, and Traefik reads it at every renewal. It never appears in this repository or in GitHub Actions. The token is scoped to Zone:DNS:Edit on the one zone and locked to the VPS's IP.
 
 ## Adding an app
 
@@ -52,9 +52,11 @@ Router names (`myapp` above) must be unique across every app on the box. Keep da
 
 | Path | Owner | Purpose |
 | ---- | ----- | ------- |
-| `/opt/traefik/` | `deploy` | This repository's deployed config, plus `.env` (not in git) |
-| `/opt/apps/<app>/` | `deploy` | One directory per app, deployed by that app's workflow |
-| `/opt/backups/<app>/` | `deploy` | Staging area for that app's nightly backup before upload |
+| `/home/deploy/traefik/` | `deploy` | This repository's deployed config, plus `.env` (not in git) |
+| `/home/deploy/apps/<app>/` | `deploy` | One directory per app, deployed by that app's workflow |
+| `/home/deploy/backups/<app>/` | `deploy` | Staging area for that app's nightly backup before upload |
+
+Everything lives under the deploy user's home folder because Docker on this VPS is the Canonical snap. Snap confinement stops both the `docker` CLI and the daemon from reading paths such as `/opt`, but allows non-hidden paths under `/home`. The snap's automatic updates would restart every container, so they are held (`snap refresh --hold docker`). Update Docker by hand in a quiet period with `snap refresh docker`.
 
 Docker network `traefik-shared` is created once, by hand (`docker network create traefik-shared`). Every compose project, this one included, treats it as `external: true`.
 
@@ -73,7 +75,7 @@ Backups go to the Cloudflare R2 bucket `vanderbelt-backups`, one prefix per app,
 
 ## Deployment
 
-`build-and-deploy.yml` calls `ci.yml` first and only deploys if it passes. It rsyncs `traefik/` into `/opt/traefik/`, deleting files removed from the repo but never `.env`. Then it runs `docker compose up -d` over SSH and checks the container is still up 15 seconds later. `main` is protected, so changes go through a pull request with passing checks.
+`build-and-deploy.yml` calls `ci.yml` first and only deploys if it passes. It rsyncs `traefik/` into `/home/deploy/traefik/`, deleting files removed from the repo but never `.env`. Then it runs `docker compose up -d` over SSH and checks the container is still up 15 seconds later. `main` is protected, so changes go through a pull request with passing checks.
 
 For now it only runs when triggered by hand (**Actions → Build and Deploy → Run workflow**). Push-to-`main` deploys get switched on after the first cutover from the old Traefik (DEV-166).
 

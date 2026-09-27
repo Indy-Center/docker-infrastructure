@@ -1,4 +1,4 @@
-# What an app's own docker-compose.yml looks like. Deployed to /opt/apps/<app>/ by that app's workflow.
+# What an app's own docker-compose.yml looks like. Deployed to /home/deploy/apps/<app>/ by that app's workflow.
 # traefik/whoami stands in for the app so the example runs as-is.
 services:
   app:

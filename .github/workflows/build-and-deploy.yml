@@ -46,14 +46,14 @@ jobs:
           EOF
 
       # --delete removes files dropped from traefik/; excluded files (.env) are never deleted.
-      - name: Sync traefik/ to /opt/traefik/
-        run: rsync -rlz --delete --exclude=.env traefik/ vps:/opt/traefik/
+      - name: Sync traefik/ to ~/traefik/
+        run: rsync -rlz --delete --exclude=.env traefik/ vps:traefik/
 
       - name: docker compose up -d
         run: |
           ssh vps '
             set -e
-            cd /opt/traefik
+            cd ~/traefik
             docker compose pull --quiet
             docker compose up -d --remove-orphans
             sleep 15
