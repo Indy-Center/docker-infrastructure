@@ -1,0 +1,77 @@
+# docker-infrastructure
+
+The Traefik reverse proxy for the Vanderbelt VPS. It terminates TLS for `*.flyindycenter.com` and routes traffic to every app container on the box. GitHub Actions deploys it to `/opt/traefik/` on push to `main`.
+
+[![Build and Deploy](https://github.com/Indy-Center/docker-infrastructure/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/Indy-Center/docker-infrastructure/actions/workflows/build-and-deploy.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+This repository holds Traefik and nothing else. Each app has its own repository, its own `ci.yml` / `build-and-deploy.yml`, and its own `docker-compose.yml` under `/opt/apps/<app>/`. It joins Traefik over a shared Docker network.
+
+## Project layout
+
+- `docker-compose.yml`: the Traefik service. Publishes `:80` and `:443` and joins `traefik-shared`.
+- `traefik.yml`: static config, meaning the entrypoints, the Let's Encrypt DNS-01 resolver and the Docker and file providers.
+- `dynamic/`: file-provider config (middlewares, extra routers). Traefik watches it, so changes apply without a restart.
+- `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up.
+- `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs the config to `/opt/traefik/` and runs `docker compose up -d` over SSH.
+
+## Certificates
+
+Traefik requests one wildcard certificate, `flyindycenter.com` + `*.flyindycenter.com`, from Let's Encrypt using the DNS-01 challenge through Cloudflare, and serves it as the default certificate. Apps don't request their own. `tls=true` on a router is enough.
+
+The Cloudflare token (`CF_DNS_API_TOKEN`) is a runtime secret. It lives in `/opt/traefik/.env` on the VPS, and Traefik reads it at every renewal. It never appears in this repository or in GitHub Actions. The token is scoped to Zone:DNS:Edit on the one zone and locked to the VPS's IP.
+
+## Adding an app
+
+Only containers labelled `traefik.enable=true` are routed (`exposedByDefault: false`). An app's `docker-compose.yml` joins the shared network and labels its web service:
+
+```yaml
+services:
+  app:
+    # ...
+    networks:
+      - traefik-shared
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-shared
+      - traefik.http.routers.myapp.rule=Host(`myapp.flyindycenter.com`)
+      - traefik.http.routers.myapp.entrypoints=websecure
+      - traefik.http.routers.myapp.tls=true
+      - traefik.http.services.myapp.loadbalancer.server.port=3000
+
+networks:
+  traefik-shared:
+    external: true
+```
+
+Keep databases and other internal services on the app's own network, not on `traefik-shared`. Don't publish ports on the host. Traefik reaches the container over the network.
+
+## VPS layout
+
+| Path | Owner | Purpose |
+| ---- | ----- | ------- |
+| `/opt/traefik/` | `deploy` | This repository's deployed config, plus `.env` (not in git) |
+| `/opt/apps/<app>/` | `deploy` | One directory per app, deployed by that app's workflow |
+| `/opt/backups/<app>/` | `deploy` | Staging area for that app's nightly backup before upload |
+
+Docker network `traefik-shared` is created once, by hand (`docker network create traefik-shared`). Every compose project, this one included, treats it as `external: true`.
+
+Backups go to the Cloudflare R2 bucket `vanderbelt-backups`, one prefix per app, with a 60-day lifecycle. rclone's R2 credentials live in the `deploy` user's rclone config on the VPS, not in GitHub.
+
+## Deployment
+
+A push to `main` runs `build-and-deploy.yml`, which calls `ci.yml` first and only deploys if it passes. `main` is protected. Changes go through a pull request with passing checks. Deploys sync the config into `/opt/traefik/` and leave `.env` alone.
+
+Repository secrets:
+
+| Secret | Value |
+| ------ | ----- |
+| `VPS_HOST` | VPS hostname or IP |
+| `VPS_DEPLOY_USER` | `deploy` |
+| `VPS_DEPLOY_SSH_KEY` | Private key of the deploy user's key pair |
+
+A change to `traefik.yml` or `docker-compose.yml` recreates the Traefik container, and every app behind it is briefly unreachable. Changes under `dynamic/` are picked up live.
+
+## Disclaimer
+
+We are not affiliated with the FAA or any aviation governing body. This software is for flight simulation use on the [VATSIM](https://www.vatsim.net) network.
