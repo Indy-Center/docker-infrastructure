@@ -1,6 +1,6 @@
 # docker-infrastructure
 
-The Traefik reverse proxy for the Vanderbelt VPS. It terminates TLS for `*.flyindycenter.com` and routes traffic to every app container on the box. GitHub Actions deploys it to `/opt/traefik/` on push to `main`.
+The Traefik reverse proxy for the Vanderbilt VPS. It terminates TLS for `*.flyindycenter.com` and routes traffic to every app container on the box. GitHub Actions deploys it to `/opt/traefik/` on push to `main`.
 
 [![Build and Deploy](https://github.com/Indy-Center/docker-infrastructure/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/Indy-Center/docker-infrastructure/actions/workflows/build-and-deploy.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -85,10 +85,10 @@ Organization secrets (**Org Settings → Secrets and variables → Actions**). A
 
 | Secret | Value |
 | ------ | ----- |
-| `VANDERBELT_HOST` | VPS hostname or IP |
-| `VANDERBELT_DEPLOY_USER` | `deploy` |
-| `VANDERBELT_DEPLOY_SSH_KEY` | Private key of the deploy user's key pair |
-| `VANDERBELT_KNOWN_HOSTS` | The VPS's SSH host key line(s), so the runner can check it's talking to the real VPS |
+| `VANDERBILT_HOST` | VPS hostname or IP |
+| `VANDERBILT_DEPLOY_USER` | `deploy` |
+| `VANDERBILT_DEPLOY_SSH_KEY` | Private key of the deploy user's key pair |
+| `VANDERBILT_KNOWN_HOSTS` | The VPS's SSH host key line(s), so the runner can check it's talking to the real VPS |
 
 A change to `traefik/traefik.yml` or `traefik/docker-compose.yml` recreates the Traefik container, and every app behind it is briefly unreachable. Changes under `traefik/dynamic/` are picked up live.
 
