@@ -1,0 +1,66 @@
+name: Build and Deploy
+
+on:
+  # Manual only until the DEV-166 cutover is done, since the old Traefik still holds :80 and :443.
+  # After that, add:
+  # push:
+  #   branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build-and-deploy:
+    needs: ci # skipped if any check fails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_DEPLOY_USER: ${{ secrets.VPS_DEPLOY_USER }}
+          VPS_DEPLOY_SSH_KEY: ${{ secrets.VPS_DEPLOY_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host vps
+            HostName $VPS_HOST
+            User $VPS_DEPLOY_USER
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            BatchMode yes
+          EOF
+
+      # --delete removes files dropped from traefik/; excluded files (.env) are never deleted.
+      - name: Sync traefik/ to /opt/traefik/
+        run: rsync -rlz --delete --exclude=.env traefik/ vps:/opt/traefik/
+
+      - name: docker compose up -d
+        run: |
+          ssh vps '
+            set -e
+            cd /opt/traefik
+            docker compose pull --quiet
+            docker compose up -d --remove-orphans
+            sleep 15
+            state="$(docker inspect -f "{{.State.Running}} {{.RestartCount}}" traefik)"
+            echo "traefik running/restarts: $state"
+            if [ "$state" != "true 0" ]; then
+              docker compose logs --tail 50 traefik
+              exit 1
+            fi
+          '

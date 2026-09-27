@@ -72,7 +72,11 @@ Backups go to the Cloudflare R2 bucket `vanderbelt-backups`, one prefix per app,
 
 ## Deployment
 
-A push to `main` runs `build-and-deploy.yml`, which calls `ci.yml` first and only deploys if it passes. `main` is protected. Changes go through a pull request with passing checks. Deploys sync `traefik/` into `/opt/traefik/` and leave `.env` alone.
+`build-and-deploy.yml` calls `ci.yml` first and only deploys if it passes. It rsyncs `traefik/` into `/opt/traefik/`, deleting files removed from the repo but never `.env`. Then it runs `docker compose up -d` over SSH and checks the container is still up 15 seconds later. `main` is protected, so changes go through a pull request with passing checks.
+
+For now it only runs when triggered by hand (**Actions → Build and Deploy → Run workflow**). Push-to-`main` deploys get switched on after the first cutover from the old Traefik (DEV-166).
+
+`ci.yml` runs on every pull request. It starts Traefik and the example app on a runner, then checks that Traefik stays up, loads `dynamic/`, redirects HTTP to HTTPS and routes the example app. The runner has no Cloudflare token, so its certificate request fails against Let's Encrypt staging. That's expected.
 
 Repository secrets:
 
@@ -81,6 +85,7 @@ Repository secrets:
 | `VPS_HOST` | VPS hostname or IP |
 | `VPS_DEPLOY_USER` | `deploy` |
 | `VPS_DEPLOY_SSH_KEY` | Private key of the deploy user's key pair |
+| `VPS_KNOWN_HOSTS` | The VPS's SSH host key line(s), so the runner can check it's talking to the real VPS |
 
 A change to `traefik/traefik.yml` or `traefik/docker-compose.yml` recreates the Traefik container, and every app behind it is briefly unreachable. Changes under `traefik/dynamic/` are picked up live.
 
