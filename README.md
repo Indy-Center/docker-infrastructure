@@ -14,6 +14,7 @@ This repository holds Traefik and nothing else. Each app has its own repository,
   - `traefik.yml`: static config, meaning the entrypoints (`web` redirects to `websecure`), the `letsencrypt` DNS-01 resolver and the Docker and file providers.
   - `dynamic/`: file-provider config. Traefik watches it, so changes apply without a restart. `tls.yml` requests the wildcard certificate, and `dashboard.yml` routes the dashboard.
 - `examples/app/`: what an app's own repository copies to run behind Traefik.
+- `staging/`: a throwaway Traefik against Let's Encrypt staging, used by `staging.yml` to prove certificate issuance. Never deployed.
 - `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up.
 - `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs `traefik/` to `/opt/traefik/` and runs `docker compose up -d` over SSH.
 
@@ -77,6 +78,8 @@ Backups go to the Cloudflare R2 bucket `vanderbelt-backups`, one prefix per app,
 For now it only runs when triggered by hand (**Actions → Build and Deploy → Run workflow**). Push-to-`main` deploys get switched on after the first cutover from the old Traefik (DEV-166).
 
 `ci.yml` runs on every pull request. It starts Traefik and the example app on a runner, then checks that Traefik stays up, loads `dynamic/`, redirects HTTP to HTTPS and routes the example app. The runner has no Cloudflare token, so its certificate request fails against Let's Encrypt staging. That's expected.
+
+`staging.yml` (**Actions → Staging certificate check**) runs the real pipeline without touching production. It uses the same secrets, SSH, rsync and `docker compose`, plus the real Cloudflare token. It starts a throwaway Traefik from `staging/` in `~/traefik-staging/` on the VPS, on `127.0.0.1:8443`. That Traefik asks Let's Encrypt **staging** for the wildcard using production's own `dynamic/tls.yml`, and the run passes once it serves a certificate covering `*.flyindycenter.com`. It then removes the container, volume and directory. Run it before any change to certificate settings.
 
 Repository secrets:
 
