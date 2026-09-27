@@ -51,7 +51,28 @@ jobs:
 
       # --delete removes files dropped from deploy/; excluded files (.env) are never deleted.
       - name: Sync deploy/ to ~/apps/<app>/
-        run: rsync -rlz --delete --exclude=.env deploy/ "vps:apps/$APP/"
+        run: rsync -rlz --delete --exclude=.env --exclude=.env.example deploy/ "vps:apps/$APP/"
+
+      # Every repo secret or variable named ENV_<NAME> becomes NAME='value' in ~/apps/<app>/.env
+      # (a secret wins over a variable with the same name). The deploy owns that file and rewrites it
+      # every time, so a value changes by updating its secret and re-running the deploy, never by
+      # editing the file on the box.
+      - name: Write .env
+        env:
+          SECRETS: ${{ toJSON(secrets) }}
+          VARS: ${{ toJSON(vars) }}
+        run: |
+          # Single-quoted so Compose takes values literally, $ and # included. That means a value can't
+          # contain a single quote or a newline; if one does, this fails before anything reaches the box.
+          env_file="$(jq -rn '
+            (env.VARS | fromjson) + (env.SECRETS | fromjson)
+            | to_entries[]
+            | select(.key | startswith("ENV_"))
+            | if (.value | test("['\n]"))
+              then error("\(.key) contains a single quote or a newline")
+              else "\(.key | ltrimstr("ENV_"))='\(.value)'"
+              end')"
+          printf '%s\n' "$env_file" | ssh vps "umask 077 && cat > apps/$APP/.env"
 
       - name: docker compose up -d
         run: |
