@@ -26,19 +26,19 @@ jobs:
 
       - name: Set up SSH
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_DEPLOY_USER: ${{ secrets.VPS_DEPLOY_USER }}
-          VPS_DEPLOY_SSH_KEY: ${{ secrets.VPS_DEPLOY_SSH_KEY }}
-          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VANDERBELT_HOST: ${{ secrets.VANDERBELT_HOST }}
+          VANDERBELT_DEPLOY_USER: ${{ secrets.VANDERBELT_DEPLOY_USER }}
+          VANDERBELT_DEPLOY_SSH_KEY: ${{ secrets.VANDERBELT_DEPLOY_SSH_KEY }}
+          VANDERBELT_KNOWN_HOSTS: ${{ secrets.VANDERBELT_KNOWN_HOSTS }}
         run: |
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$VPS_DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$VANDERBELT_DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$VANDERBELT_KNOWN_HOSTS" > ~/.ssh/known_hosts
           cat > ~/.ssh/config <<EOF
           Host vps
-            HostName $VPS_HOST
-            User $VPS_DEPLOY_USER
+            HostName $VANDERBELT_HOST
+            User $VANDERBELT_DEPLOY_USER
             IdentityFile ~/.ssh/deploy_key
             IdentitiesOnly yes
             StrictHostKeyChecking yes

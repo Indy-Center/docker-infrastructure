@@ -81,14 +81,14 @@ For now it only runs when triggered by hand (**Actions → Build and Deploy → 
 
 `staging.yml` (**Actions → Staging certificate check**) runs the real pipeline without touching production. It uses the same secrets, SSH, rsync and `docker compose`, plus the real Cloudflare token. It starts a throwaway Traefik from `staging/` in `~/traefik-staging/` on the VPS, on `127.0.0.1:8443`. That Traefik asks Let's Encrypt **staging** for the wildcard using production's own `dynamic/tls.yml`, and the run passes once it serves a certificate covering `*.flyindycenter.com`. It then removes the container, volume and directory. Run it before any change to certificate settings.
 
-Repository secrets:
+Organization secrets (**Org Settings → Secrets and variables → Actions**). Access is limited to **Selected repositories**: this one, plus each app repository as it moves onto the pipeline. The deploy key can do anything `deploy` can, and `deploy` is in the docker group.
 
 | Secret | Value |
 | ------ | ----- |
-| `VPS_HOST` | VPS hostname or IP |
-| `VPS_DEPLOY_USER` | `deploy` |
-| `VPS_DEPLOY_SSH_KEY` | Private key of the deploy user's key pair |
-| `VPS_KNOWN_HOSTS` | The VPS's SSH host key line(s), so the runner can check it's talking to the real VPS |
+| `VANDERBELT_HOST` | VPS hostname or IP |
+| `VANDERBELT_DEPLOY_USER` | `deploy` |
+| `VANDERBELT_DEPLOY_SSH_KEY` | Private key of the deploy user's key pair |
+| `VANDERBELT_KNOWN_HOSTS` | The VPS's SSH host key line(s), so the runner can check it's talking to the real VPS |
 
 A change to `traefik/traefik.yml` or `traefik/docker-compose.yml` recreates the Traefik container, and every app behind it is briefly unreachable. Changes under `traefik/dynamic/` are picked up live.
 
