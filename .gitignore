@@ -1,9 +1,3 @@
 # Secrets: these live on the VPS only
 .env
 acme.json
-
-# AI working notes (documented later in tech.flyindycenter.com)
-.ai
-
-# Local agent settings
-.claude/settings.local.json
