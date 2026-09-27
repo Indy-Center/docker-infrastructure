@@ -9,11 +9,13 @@ This repository holds Traefik and nothing else. Each app has its own repository,
 
 ## Project layout
 
-- `docker-compose.yml`: the Traefik service. Publishes `:80` and `:443` and joins `traefik-shared`.
-- `traefik.yml`: static config, meaning the entrypoints, the Let's Encrypt DNS-01 resolver and the Docker and file providers.
-- `dynamic/`: file-provider config (middlewares, extra routers). Traefik watches it, so changes apply without a restart.
+- `traefik/`: everything deployed to `/opt/traefik/` on the VPS, and nothing else.
+  - `docker-compose.yml`: the Traefik service. Publishes `:80` and `:443`, joins `traefik-shared`, and keeps issued certificates in the `acme` volume.
+  - `traefik.yml`: static config, meaning the entrypoints (`web` redirects to `websecure`), the `letsencrypt` DNS-01 resolver and the Docker and file providers.
+  - `dynamic/`: file-provider config. Traefik watches it, so changes apply without a restart. `tls.yml` requests the wildcard certificate, and `dashboard.yml` routes the dashboard.
+- `examples/app/`: what an app's own repository copies to run behind Traefik.
 - `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up.
-- `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs the config to `/opt/traefik/` and runs `docker compose up -d` over SSH.
+- `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs `traefik/` to `/opt/traefik/` and runs `docker compose up -d` over SSH.
 
 ## Certificates
 
@@ -23,7 +25,7 @@ The Cloudflare token (`CF_DNS_API_TOKEN`) is a runtime secret. It lives in `/opt
 
 ## Adding an app
 
-Only containers labelled `traefik.enable=true` are routed (`exposedByDefault: false`). An app's `docker-compose.yml` joins the shared network and labels its web service:
+Only containers labelled `traefik.enable=true` are routed (`exposedByDefault: false`). An app's `docker-compose.yml` joins the shared network and labels its web service. [`examples/app/docker-compose.yml`](examples/app/docker-compose.yml) is the full version:
 
 ```yaml
 services:
@@ -33,7 +35,6 @@ services:
       - traefik-shared
     labels:
       - traefik.enable=true
-      - traefik.docker.network=traefik-shared
       - traefik.http.routers.myapp.rule=Host(`myapp.flyindycenter.com`)
       - traefik.http.routers.myapp.entrypoints=websecure
       - traefik.http.routers.myapp.tls=true
@@ -44,7 +45,7 @@ networks:
     external: true
 ```
 
-Keep databases and other internal services on the app's own network, not on `traefik-shared`. Don't publish ports on the host. Traefik reaches the container over the network.
+Router names (`myapp` above) must be unique across every app on the box. Keep databases and other internal services on the app's own network, not on `traefik-shared`. Don't publish ports on the host. Traefik reaches the container over the network.
 
 ## VPS layout
 
@@ -56,11 +57,22 @@ Keep databases and other internal services on the app's own network, not on `tra
 
 Docker network `traefik-shared` is created once, by hand (`docker network create traefik-shared`). Every compose project, this one included, treats it as `external: true`.
 
+Traefik also joins `frontend`, the network the previous Traefik used, so apps not yet moved to `traefik-shared` stay reachable after cutover. Once nothing is left on `frontend` (DEV-170), it comes out of `traefik/docker-compose.yml`.
+
+## Dashboard
+
+The dashboard is read-only and listens on the VPS's loopback address only, never on a public port. To open it, tunnel over SSH:
+
+```bash
+ssh -L 8080:localhost:8080 <user>@<vps>
+# then browse to http://localhost:8080/dashboard/
+```
+
 Backups go to the Cloudflare R2 bucket `vanderbelt-backups`, one prefix per app, with a 60-day lifecycle. rclone's R2 credentials live in the `deploy` user's rclone config on the VPS, not in GitHub.
 
 ## Deployment
 
-A push to `main` runs `build-and-deploy.yml`, which calls `ci.yml` first and only deploys if it passes. `main` is protected. Changes go through a pull request with passing checks. Deploys sync the config into `/opt/traefik/` and leave `.env` alone.
+A push to `main` runs `build-and-deploy.yml`, which calls `ci.yml` first and only deploys if it passes. `main` is protected. Changes go through a pull request with passing checks. Deploys sync `traefik/` into `/opt/traefik/` and leave `.env` alone.
 
 Repository secrets:
 
@@ -70,7 +82,7 @@ Repository secrets:
 | `VPS_DEPLOY_USER` | `deploy` |
 | `VPS_DEPLOY_SSH_KEY` | Private key of the deploy user's key pair |
 
-A change to `traefik.yml` or `docker-compose.yml` recreates the Traefik container, and every app behind it is briefly unreachable. Changes under `dynamic/` are picked up live.
+A change to `traefik/traefik.yml` or `traefik/docker-compose.yml` recreates the Traefik container, and every app behind it is briefly unreachable. Changes under `traefik/dynamic/` are picked up live.
 
 ## Disclaimer
 

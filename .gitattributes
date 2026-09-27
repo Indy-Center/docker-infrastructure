@@ -1,0 +1,2 @@
+# Everything here ends up on Linux; keep LF regardless of the committer's OS.
+* text=auto eol=lf

@@ -1,0 +1,45 @@
+# Static config. Changing this file recreates the container on deploy.
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  level: INFO
+
+# Served only on the dashboard entrypoint, which compose publishes on the VPS's loopback address.
+# See dynamic/dashboard.yml.
+api:
+  dashboard: true
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+  dashboard:
+    address: ":8080"
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      storage: /letsencrypt/acme.json
+      dnsChallenge:
+        provider: cloudflare # reads CF_DNS_API_TOKEN
+        resolvers:
+          - "1.1.1.1:53"
+          - "1.0.0.1:53"
+
+providers:
+  docker:
+    endpoint: unix:///var/run/docker.sock
+    # Only containers labelled traefik.enable=true are routed.
+    exposedByDefault: false
+    network: traefik-shared
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true

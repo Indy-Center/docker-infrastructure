@@ -1,0 +1,11 @@
+# The one wildcard certificate, served to every router with tls=true.
+# Apps never set a certresolver; this is the only place a certificate is requested.
+tls:
+  stores:
+    default:
+      defaultGeneratedCert:
+        resolver: letsencrypt
+        domain:
+          main: flyindycenter.com
+          sans:
+            - "*.flyindycenter.com"
