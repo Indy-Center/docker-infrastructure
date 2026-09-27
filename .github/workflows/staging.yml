@@ -1,0 +1,89 @@
+name: Staging certificate check
+
+# Proves the real pipeline end to end without touching production. It uses the same secrets, SSH, rsync
+# and docker compose over SSH, plus the real Cloudflare token and DNS-01. The Traefik it starts is throwaway,
+# lives in ~/traefik-staging/ with a loopback-only port, and asks Let's Encrypt staging for the wildcard.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SSH
+        env:
+          VANDERBILT_HOST: ${{ secrets.VANDERBILT_HOST }}
+          VANDERBILT_DEPLOY_USER: ${{ secrets.VANDERBILT_DEPLOY_USER }}
+          VANDERBILT_DEPLOY_SSH_KEY: ${{ secrets.VANDERBILT_DEPLOY_SSH_KEY }}
+          VANDERBILT_KNOWN_HOSTS: ${{ secrets.VANDERBILT_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VANDERBILT_DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VANDERBILT_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host vps
+            HostName $VANDERBILT_HOST
+            User $VANDERBILT_DEPLOY_USER
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            BatchMode yes
+          EOF
+
+      # Staging config, plus production's own dynamic/tls.yml: the file being validated.
+      - name: Sync to ~/traefik-staging/
+        run: |
+          mkdir -p out/dynamic
+          cp staging/* out/
+          cp traefik/dynamic/tls.yml out/dynamic/
+          rsync -rlz --delete out/ vps:traefik-staging/
+
+      - name: Start staging Traefik
+        run: |
+          ssh vps bash -s <<'EOF'
+          set -e
+          command -v openssl >/dev/null || { echo "openssl is not installed on the VPS"; exit 1; }
+          cd ~/traefik-staging
+          docker compose -f docker-compose.staging.yml up -d
+          EOF
+
+      # DNS-01 has to create the TXT record and wait for it to propagate, so give it up to 5 minutes.
+      - name: Wait for the staging wildcard certificate
+        run: |
+          ssh vps bash -s <<'EOF'
+          for i in $(seq 1 30); do
+            cert="$(echo | openssl s_client -connect 127.0.0.1:8443 -servername test.flyindycenter.com 2>/dev/null \
+              | openssl x509 -noout -subject -issuer -ext subjectAltName 2>/dev/null)"
+            if echo "$cert" | grep -q "STAGING" && echo "$cert" | grep -q "\*\.flyindycenter\.com"; then
+              echo "$cert"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "No staging wildcard certificate after 5 minutes. Last certificate served:"
+          echo "$cert"
+          exit 1
+          EOF
+
+      - name: Traefik logs
+        if: always()
+        run: ssh vps 'docker logs traefik-staging 2>&1 | tail -100' || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          ssh vps bash -s <<'EOF'
+          cd ~/traefik-staging 2>/dev/null || exit 0
+          docker compose -f docker-compose.staging.yml down -v
+          cd ~ && rm -rf ~/traefik-staging
+          EOF

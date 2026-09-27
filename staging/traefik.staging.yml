@@ -1,0 +1,29 @@
+# Same certificate resolver as traefik/traefik.yml, pointed at Let's Encrypt staging.
+# Keep the certificatesResolvers block in step with production; that block is what this run validates.
+# No Docker provider, so it ignores the apps running on the box.
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  level: INFO
+
+entryPoints:
+  websecure:
+    address: ":443"
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      storage: /letsencrypt/acme.json
+      caServer: https://acme-staging-v02.api.letsencrypt.org/directory
+      dnsChallenge:
+        provider: cloudflare # reads CF_DNS_API_TOKEN
+        resolvers:
+          - "1.1.1.1:53"
+          - "1.0.0.1:53"
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true

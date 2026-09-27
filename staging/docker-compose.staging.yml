@@ -1,0 +1,25 @@
+# Throwaway Traefik that proves the wildcard certificate issues via DNS-01 before the real cutover.
+# Run by .github/workflows/staging.yml in ~/traefik-staging/ on the VPS, then removed with `down -v`.
+# Nothing here touches production: loopback-only port, own network, own certificate volume.
+name: traefik-staging
+
+services:
+  traefik:
+    image: traefik:v3
+    container_name: traefik-staging
+    ports:
+      - "127.0.0.1:8443:443"
+    # The production token file; the staging run reads it and never writes it.
+    env_file: /opt/traefik/.env
+    volumes:
+      - ./traefik.staging.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - acme:/letsencrypt
+    networks:
+      - traefik-staging-net
+
+volumes:
+  acme:
+
+networks:
+  traefik-staging-net:
