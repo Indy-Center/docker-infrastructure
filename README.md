@@ -77,7 +77,7 @@ Backups go to the Cloudflare R2 bucket `vanderbelt-backups`, one prefix per app,
 
 `build-and-deploy.yml` calls `ci.yml` first and only deploys if it passes. It rsyncs `traefik/` into `/home/deploy/traefik/`, deleting files removed from the repo but never `.env`. Then it runs `docker compose up -d` over SSH and checks the container is still up 15 seconds later. `main` is protected, so changes go through a pull request with passing checks.
 
-For now it only runs when triggered by hand (**Actions → Build and Deploy → Run workflow**). Push-to-`main` deploys get switched on after the first cutover from the old Traefik (DEV-166).
+It runs on every push to `main`, and by hand from **Actions → Build and Deploy → Run workflow** (for example, to redeploy without a change).
 
 `ci.yml` runs on every pull request. It starts Traefik and the example app on a runner, then checks that Traefik stays up, loads `dynamic/`, redirects HTTP to HTTPS and routes the example app. The runner has no Cloudflare token, so its certificate request fails against Let's Encrypt staging. That's expected.
 
