@@ -13,7 +13,7 @@ This repository holds Traefik and nothing else. Each app has its own repository,
   - `docker-compose.yml`: the Traefik service. Publishes `:80` and `:443`, joins `traefik-shared`, and keeps issued certificates in the `acme` volume.
   - `traefik.yml`: static config, meaning the entrypoints (`web` redirects to `websecure`), the `letsencrypt` DNS-01 resolver and the Docker and file providers.
   - `dynamic/`: file-provider config. Traefik watches it, so changes apply without a restart. `tls.yml` requests the wildcard certificate, and `dashboard.yml` routes the dashboard.
-- `examples/app/`: what an app's own repository copies to run behind Traefik.
+- `examples/app/`: what an app's own repository copies to run behind Traefik: `deploy/docker-compose.yml` (what lands in `~/apps/<app>/`) and `.github/workflows/` (CI and deploy over SSH). GitHub only runs workflows from the repository root, so these never run here.
 - `staging/`: a throwaway Traefik against Let's Encrypt staging, used by `staging.yml` to prove certificate issuance. Never deployed.
 - `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up.
 - `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH.
@@ -26,7 +26,7 @@ The Cloudflare token (`CF_DNS_API_TOKEN`) is a runtime secret. It lives in `/hom
 
 ## Adding an app
 
-Only containers labelled `traefik.enable=true` are routed (`exposedByDefault: false`). An app's `docker-compose.yml` joins the shared network and labels its web service. [`examples/app/docker-compose.yml`](examples/app/docker-compose.yml) is the full version:
+Only containers labelled `traefik.enable=true` are routed (`exposedByDefault: false`). An app's `docker-compose.yml` joins the shared network and labels its web service. [`examples/app/deploy/docker-compose.yml`](examples/app/deploy/docker-compose.yml) is the full version:
 
 ```yaml
 services:

@@ -1,0 +1,69 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.event.repository.name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build-and-deploy:
+    needs: ci # skipped if any check fails
+    runs-on: ubuntu-latest
+    env:
+      # The app's directory on the VPS: /home/deploy/apps/<repo name>/.
+      APP: ${{ github.event.repository.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The VANDERBILT_* secrets are organization secrets limited to selected repositories.
+      # An org admin adds this repository to all four before the first deploy.
+      - name: Set up SSH
+        env:
+          VANDERBILT_HOST: ${{ secrets.VANDERBILT_HOST }}
+          VANDERBILT_DEPLOY_USER: ${{ secrets.VANDERBILT_DEPLOY_USER }}
+          VANDERBILT_DEPLOY_SSH_KEY: ${{ secrets.VANDERBILT_DEPLOY_SSH_KEY }}
+          VANDERBILT_KNOWN_HOSTS: ${{ secrets.VANDERBILT_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VANDERBILT_DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$VANDERBILT_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host vps
+            HostName $VANDERBILT_HOST
+            User $VANDERBILT_DEPLOY_USER
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            BatchMode yes
+          EOF
+
+      # --delete removes files dropped from deploy/; excluded files (.env) are never deleted.
+      - name: Sync deploy/ to ~/apps/<app>/
+        run: rsync -rlz --delete --exclude=.env deploy/ "vps:apps/$APP/"
+
+      - name: docker compose up -d
+        run: |
+          ssh vps "APP=$APP bash -s" <<'EOF'
+          set -e
+          cd ~/apps/"$APP"
+          docker compose pull --quiet
+          docker compose up -d --remove-orphans
+          sleep 15
+          docker compose ps
+          # Healthy = nothing restarting and no restarts since start. One-shot containers that exited 0 pass.
+          if docker inspect -f '{{.State.Restarting}} {{.RestartCount}}' $(docker compose ps -aq) | grep -qv '^false 0$'; then
+            docker compose logs --tail 50
+            exit 1
+          fi
+          EOF
