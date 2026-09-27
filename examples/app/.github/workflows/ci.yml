@@ -1,0 +1,24 @@
+name: CI
+
+# No push trigger: on main, CI runs inside build-and-deploy.yml, so it still runs once per commit.
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The project's own checks go here first: format, types, build, tests. See the CI shape pattern.
+
+      - name: Compose file is valid
+        run: docker compose -f deploy/docker-compose.yml config -q
+
+      # Fails on a mistyped image or tag before it reaches the VPS.
+      - name: Images exist
+        run: docker compose -f deploy/docker-compose.yml pull --quiet

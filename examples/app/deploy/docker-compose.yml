@@ -1,0 +1,43 @@
+# An app's deploy/docker-compose.yml. The app's build-and-deploy workflow rsyncs deploy/ to
+# /home/deploy/apps/<repo name>/ on the Vanderbilt VPS, so the compose project is named after the repo.
+# Renaming the repo renames the project and its volumes; the old volumes stay behind.
+# traefik/whoami stands in for the app so the example runs as-is.
+services:
+  app:
+    image: traefik/whoami
+    restart: unless-stopped
+    # Runtime secrets live in deploy/.env on the VPS only. It's never in git, and the deploy never touches it.
+    env_file:
+      - path: .env
+        required: false
+    networks:
+      - traefik-shared # reachable by Traefik
+      - internal # reaches the app's own services
+    labels:
+      - traefik.enable=true
+      # Router names are global across every app on the box; prefix them with the app's name.
+      - traefik.http.routers.example-app.rule=Host(`example-app.flyindycenter.com`)
+      - traefik.http.routers.example-app.entrypoints=websecure
+      - traefik.http.routers.example-app.tls=true
+      - traefik.http.services.example-app.loadbalancer.server.port=80
+
+  # Databases and other internal services join only the app's own network, never traefik-shared,
+  # and publish no ports on the host. Keep their data in named volumes: the deploy rsyncs with
+  # --delete, so a bind mount under deploy/ would be wiped on the next deploy.
+  # db:
+  #   image: postgres:17-alpine
+  #   env_file:
+  #     - path: .env
+  #       required: false
+  #   volumes:
+  #     - db-data:/var/lib/postgresql/data
+  #   networks:
+  #     - internal
+
+networks:
+  traefik-shared:
+    external: true
+  internal:
+
+# volumes:
+#   db-data:

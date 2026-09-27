@@ -27,7 +27,7 @@ jobs:
       - name: Start Traefik and the example app
         run: |
           docker compose -f traefik/docker-compose.yml up -d
-          docker compose -f examples/app/docker-compose.yml up -d
+          docker compose -f examples/app/deploy/docker-compose.yml up -d
           sleep 15
 
       - name: Traefik stays up
