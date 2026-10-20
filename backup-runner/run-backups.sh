@@ -44,6 +44,7 @@ if [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt $((5 * 1024 * 1024)) ]; th
 fi
 exec >>"$LOG" 2>&1
 
+# Writes one timestamped line to the log.
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 
 # Only one run at a time: if the last hour's run is still going (a slow recipe), this
@@ -88,7 +89,7 @@ post_discord() {
 # An alert is something a person needs to act on. It goes to tech-team-alerts at once.
 alert() {
   log "ALERT: $1"
-  post_discord discord-alerts.url "$1"
+  post_discord alert-webhook.url "$1"
 }
 
 # --- The schedule ------------------------------------------------------------------
@@ -101,14 +102,17 @@ NIGHTLY_HOUR=7
 # (days frequent copies are kept; 0 means no frequent tier). An app with no line gets
 # the default: nightly, no frequent tier.
 #
-# EVERY must divide 24 (1, 2, 3, 4, 6, 8, 12 or 24) so the hours repeat each day. A line
-# that breaks that is put in BAD_SCHEDULE, and the app falls back to the default.
+# EVERY must divide 24 (1, 2, 3, 4, 6, 8, 12 or 24) so the hours repeat each day, and an
+# app backed up more than once a day needs a frequent tier to keep the extra copies in.
+# A line that breaks either rule is put in BAD_SCHEDULE, and the app falls back to the
+# default.
 read_schedule() {
   EVERY=24 KEEP=0 BAD_SCHEDULE=""
   local name every keep
   while read -r name every keep _; do
     [ "$name" = "$1" ] || continue
-    if [[ "$every" =~ ^(1|2|3|4|6|8|12|24)$ && "${keep:-0}" =~ ^[0-9]+$ ]]; then
+    if [[ "$every" =~ ^(1|2|3|4|6|8|12|24)$ && "${keep:-0}" =~ ^[0-9]+$ ]] \
+      && { [ "$every" = 24 ] || (( keep > 0 )); }; then
       EVERY="$every" KEEP="${keep:-0}"
     else
       BAD_SCHEDULE="$name $every $keep"
@@ -138,27 +142,31 @@ has_backup() {
   [ -n "$(rclone lsf --files-only --include "$prefix*" "$BUCKET/$tier/$app/" 2>/dev/null)" ]
 }
 
-# Uploads an encrypted backup into its tier, then promotes it: the first backup of each
-# day is copied to daily/, the first of each month to monthly/. The copies are made inside
-# the bucket, so the file crosses the network once. --immutable refuses to overwrite.
+# Uploads an encrypted backup, then promotes it: the first backup of each day is copied
+# to daily/, the first of each month to monthly/, so each holds one copy per day or month.
+# The copies are made inside the bucket, so the file crosses the network once.
+# --immutable refuses to overwrite.
 #
 # An app with a frequent tier uploads to frequent/ every time. An app without one uploads
-# straight to daily/, since each of its backups is that day's.
+# its day's first backup straight to daily/, and any extra one that day (a made-up run,
+# or the first run of a new app before 07:00) to frequent/.
 upload() {
   local app="$1" file="$2" name="$3"
-  local first
-  if (( KEEP > 0 )); then
-    first="frequent/$app/$name"
-    rclone copyto --immutable "$file" "$BUCKET/$first" || return 1
-    if ! has_backup daily "$app" "$DAY"; then
-      rclone copyto --immutable "$BUCKET/$first" "$BUCKET/daily/$app/$name" || return 1
-    fi
+  local uploaded_to first_of_day=no
+  has_backup daily "$app" "$DAY" || first_of_day=yes
+
+  if (( KEEP > 0 )) || [ "$first_of_day" = no ]; then
+    uploaded_to="frequent/$app/$name"
   else
-    first="daily/$app/$name"
-    rclone copyto --immutable "$file" "$BUCKET/$first" || return 1
+    uploaded_to="daily/$app/$name"
+  fi
+  rclone copyto --immutable "$file" "$BUCKET/$uploaded_to" || return 1
+
+  if [ "$first_of_day" = yes ] && [ "$uploaded_to" != "daily/$app/$name" ]; then
+    rclone copyto --immutable "$BUCKET/$uploaded_to" "$BUCKET/daily/$app/$name" || return 1
   fi
   if ! has_backup monthly "$app" "$MONTH"; then
-    rclone copyto --immutable "$BUCKET/$first" "$BUCKET/monthly/$app/$name" || return 1
+    rclone copyto --immutable "$BUCKET/$uploaded_to" "$BUCKET/monthly/$app/$name" || return 1
   fi
 }
 
@@ -174,9 +182,11 @@ back_up() {
   mkdir -p "$stage/out"
 
   # 1. The recipe, run from the app's folder with bash (the deploy's rsync drops the
-  #    execute bit). Its output is kept for the alert as well as the log.
+  #    execute bit). Its output is kept for the alert as well as the log. 9>&- keeps
+  #    the run lock out of anything the recipe starts.
   log "$app: running backup.sh"
-  (cd "$APPS_DIR/$app" && timeout "$RECIPE_TIMEOUT" bash backup.sh "$stage/out") > "$stage/recipe.log" 2>&1
+  (cd "$APPS_DIR/$app" && timeout "$RECIPE_TIMEOUT" bash backup.sh "$stage/out") \
+    > "$stage/recipe.log" 2>&1 9>&- < /dev/null
   local status=$?
   cat "$stage/recipe.log"
   if [ "$status" != 0 ]; then
@@ -185,35 +195,36 @@ back_up() {
   fi
 
   # 2. Exactly one file, or the recipe broke the contract.
-  local files
-  files="$(ls -A "$stage/out")"
-  if [ -z "$files" ] || [ "$(echo "$files" | wc -l)" != 1 ] || [ ! -f "$stage/out/$files" ]; then
-    fail_app "$app" "backup.sh must write exactly one file, but wrote: ${files:-nothing}"
+  local written file
+  written="$(ls -A "$stage/out")"
+  if [ -z "$written" ] || [ "$(echo "$written" | wc -l)" != 1 ] || [ ! -f "$stage/out/$written" ]; then
+    fail_app "$app" "backup.sh must write exactly one file, but wrote: ${written:-nothing}"
     return 1
   fi
+  file="$written"
 
   # 3. Encrypt it with the age key, then drop the unencrypted copy.
-  if ! age -e -i "$SECRETS/age.key" -o "$stage/$files.age" "$stage/out/$files" 2> "$stage/age.log"; then
+  if ! age -e -i "$SECRETS/age.key" -o "$stage/$file.age" "$stage/out/$file" 2> "$stage/age.log"; then
     fail_app "$app" "encryption failed" "$(cat "$stage/age.log")"
     return 1
   fi
-  rm -f "$stage/out/$files"
+  rm -f "$stage/out/$file"
 
   # 4. Upload and promote.
-  if ! upload "$app" "$stage/$files.age" "$STAMP-$files.age" 2> "$stage/rclone.log"; then
+  if ! upload "$app" "$stage/$file.age" "$STAMP-$file.age" 2> "$stage/rclone.log"; then
     cat "$stage/rclone.log"
     fail_app "$app" "upload failed" "$(tail -n 5 "$stage/rclone.log")"
     return 1
   fi
 
   rm -rf "$stage"
-  log "$app: backed up $STAMP-$files.age"
+  log "$app: backed up $STAMP-$file.age"
 }
 
 # Alerts that one app's backup failed and removes its staging folder.
 fail_app() {
   local app="$1" what="$2" detail="${3:-}"
-  rm -rf "$STAGING_DIR/$app"
+  rm -rf "${STAGING_DIR:?}/$app"
   alert "Backup of **$app** failed: $what.${detail:+$'\n'\`\`\`$'\n'$detail$'\n'\`\`\`}"
 }
 
@@ -225,13 +236,18 @@ fail_app() {
 STATE="$RUNNER_HOME/state"
 mkdir -p "$STATE"
 
+# Saves an app's result from this run: record <app> <result>.
 record() { echo "$2" > "$STATE/$1"; }
 
+# The bucket's top-level folders that hold app backups (media/ is the media copy's).
+TIERS="frequent daily monthly"
+
 # The time of an app's newest backup in any tier, as "2026-10-20 07:00", or "never".
+# File names start with their time, so the last in sorted order is the newest.
 last_good() {
-  local newest
-  newest="$(rclone lsf --files-only -R --include "/{frequent,daily,monthly}/$1/*" "$BUCKET" 2>/dev/null \
-    | xargs -r -n1 basename | sort | tail -n 1)"
+  local tier newest
+  newest="$(for tier in $TIERS; do rclone lsf --files-only "$BUCKET/$tier/$1/" 2>/dev/null; done \
+    | sort | tail -n 1)"
   if [ -z "$newest" ]; then
     echo never
   else
@@ -241,19 +257,28 @@ last_good() {
 
 # Bytes an app's backups take up across all tiers.
 space_used() {
-  rclone size --json --include "/{frequent,daily,monthly}/$1/**" "$BUCKET" 2>/dev/null \
-    | grep -o '"bytes":[0-9]*' | cut -d: -f2 || echo 0
+  local tier bytes total=0
+  for tier in $TIERS; do
+    bytes="$(rclone size --json "$BUCKET/$tier/$1/" 2>/dev/null | grep -o '"bytes":[0-9]*' | cut -d: -f2)"
+    total=$((total + ${bytes:-0}))
+  done
+  echo "$total"
 }
 
+# Bytes as people read them: 1536 becomes 1.5KiB.
 human() { numfmt --to=iec-i --suffix=B "${1:-0}"; }
 
 # Builds the report and posts it to tech-team-notifications.
 send_report() {
-  local rows="" total=0 dir app result bytes when
+  local rows="" notes="" total=0 dir app result bytes when
   for dir in "$APPS_DIR"/*/; do
     [ -d "$dir" ] || continue
     app="$(basename "$dir")"
     result="$(cat "$STATE/$app" 2>/dev/null || echo "not run yet")"
+    # Backed up but can't be restored the standard way (decision 0005): say so.
+    if [ -f "$dir/backup.sh" ] && [ ! -f "$dir/restore.sh" ]; then
+      notes+="$app has no restore.sh"$'\n'
+    fi
     case "$result" in
       "no data" | "no recipe") rows+="$(printf '%-16s %s' "$app" "$result")"$'\n' ;;
       *)
@@ -264,11 +289,11 @@ send_report() {
         ;;
     esac
   done
-  post_discord discord-report.url "**Backups for $DAY** (times UTC)
+  post_discord report-webhook.url "**Backups for $DAY** (times UTC)
 \`\`\`
 $(printf '%-16s %-10s %-17s %s' app result "last good" space)
 ${rows}total space: $(human "$total")
-\`\`\`"
+\`\`\`${notes:+$'\n'$notes}"
   log "report sent"
 }
 
@@ -281,9 +306,12 @@ ping_status_page() {
     return
   fi
   # The secret goes in a header read from stdin, so it never appears in a command line.
-  printf 'Authorization: Bearer %s\n' "$(cat "$secret_file")" \
-    | curl -fsS --max-time 30 --retry 2 -o /dev/null -X POST -H @- "$(cat "$url_file")" \
-    && log "status page pinged" || log "status page ping failed"
+  if printf 'Authorization: Bearer %s\n' "$(cat "$secret_file")" \
+    | curl -fsS --max-time 30 --retry 2 -o /dev/null -X POST -H @- "$(cat "$url_file")"; then
+    log "status page pinged"
+  else
+    log "status page ping failed"
+  fi
 }
 
 # --- The run -------------------------------------------------------------------------
@@ -295,7 +323,7 @@ for dir in "$APPS_DIR"/*/; do
   is_due "$app" || continue
   echo "$RUN_HOUR" > "$STATE/$app.last-run"
   if [ -n "$BAD_SCHEDULE" ]; then
-    alert "The schedule line \`$BAD_SCHEDULE\` for **$app** is not valid (every: 1, 2, 3, 4, 6, 8, 12 or 24 hours; keep: whole days), so $app is on the default, nightly."
+    alert "The schedule line \`$BAD_SCHEDULE\` for **$app** is not valid (every: 1, 2, 3, 4, 6, 8, 12 or 24 hours; keep: whole days, more than 0 unless every is 24), so $app is on the default, nightly."
   fi
 
   # The app contract: backup.sh, or a no-backup marker for an app with nothing to keep.

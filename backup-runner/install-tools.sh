@@ -54,7 +54,12 @@ fi
 
 if ! have_version rclone "$RCLONE_VERSION"; then
   fetch "https://downloads.rclone.org/$RCLONE_VERSION/rclone-$RCLONE_VERSION-linux-$arch.zip" "$rclone_sha"
-  unzip -q "$work/rclone-$RCLONE_VERSION-linux-$arch.zip" -d "$work"
+  # unzip is not always on a fresh server; Python's zipfile does the same job.
+  if command -v unzip >/dev/null; then
+    unzip -q "$work/rclone-$RCLONE_VERSION-linux-$arch.zip" -d "$work"
+  else
+    python3 -m zipfile -e "$work/rclone-$RCLONE_VERSION-linux-$arch.zip" "$work"
+  fi
   install -m 755 "$work/rclone-$RCLONE_VERSION-linux-$arch/rclone" "$bin_dir/"
   echo "installed rclone $RCLONE_VERSION"
 fi

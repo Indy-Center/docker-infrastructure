@@ -50,3 +50,25 @@ jobs:
       - name: Traefik logs
         if: always()
         run: docker logs traefik
+
+  # The backup runner, run against fake apps, a local folder standing in for R2 and a fake
+  # Discord and status page. See tests/backup-runner/test.sh.
+  backup-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install age and rclone (the versions the VPS gets)
+        run: |
+          bash backup-runner/install-tools.sh "$HOME/backup-runner-bin"
+          echo "$HOME/backup-runner-bin" >> "$GITHUB_PATH"
+
+      - name: Runner tests
+        run: bash tests/backup-runner/test.sh
+
+      - name: Crontab entry installs once, however often the deploy runs
+        run: |
+          bash backup-runner/install-cron.sh
+          bash backup-runner/install-cron.sh
+          crontab -l
+          [ "$(crontab -l | grep -c '# backup-runner$')" = 1 ]

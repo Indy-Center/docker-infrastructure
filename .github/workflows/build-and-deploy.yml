@@ -125,3 +125,23 @@ jobs:
           printf '%s\n' "$AGE_KEY" | write_secret age.key
           printf '%s\n' "$REPORT_WEBHOOK" | write_secret report-webhook.url
           printf '%s\n' "$ALERT_WEBHOOK" | write_secret alert-webhook.url
+
+      # The backup runner: its scripts and schedule file into ~/backup-runner/. --delete
+      # removes files dropped from backup-runner/, but never the folders that live only on
+      # the box: secrets/, the runner's state/ and logs/, and bin/ (age and rclone).
+      # These come after the secrets, so cron never starts a runner that lacks them.
+      - name: Sync backup-runner/ to ~/backup-runner/
+        run: |
+          rsync -rlz --delete \
+            --exclude=/secrets/ --exclude=/state/ --exclude=/logs/ --exclude=/bin/ \
+            backup-runner/ vps:backup-runner/
+
+      # Installs the pinned age and rclone into ~/backup-runner/bin (skipped when already
+      # there), then the hourly crontab entry that starts the runner.
+      - name: Install the backup runner's tools and crontab entry
+        run: |
+          ssh vps '
+            set -e
+            bash ~/backup-runner/install-tools.sh ~/backup-runner/bin
+            bash ~/backup-runner/install-cron.sh
+          '

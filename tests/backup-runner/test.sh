@@ -6,7 +6,7 @@
 #
 #   bash tests/backup-runner/test.sh            # every test
 #   bash tests/backup-runner/test.sh due        # tests whose name contains "due"
-#   KEEP=1 bash tests/backup-runner/test.sh due # keep each fake VPS to look at
+#   KEEP_FAKE_VPS=1 bash tests/backup-runner/test.sh due   # keep each fake VPS to look at
 #
 # Needs age, age-keygen and rclone on PATH (backup-runner/install-tools.sh), python3, curl.
 set -uo pipefail
@@ -25,21 +25,22 @@ setup() {
   python3 "$here/fake-endpoint.py" "$T/endpoint" &
   endpoint_pid=$!
   for _ in $(seq 50); do [ -f "$T/endpoint/port" ] && break; sleep 0.1; done
-  local url="http://127.0.0.1:$(cat "$T/endpoint/port")"
+  local url
+  url="http://127.0.0.1:$(cat "$T/endpoint/port")"
 
   # rclone's alias backend makes r2:indy-center-backups a plain folder on disk.
   printf '[r2]\ntype = alias\nremote = %s\n' "$T/r2" > "$T/runner/secrets/rclone.conf"
   age-keygen -o "$T/runner/secrets/age.key" 2>/dev/null
-  echo "$url/report" > "$T/runner/secrets/discord-report.url"
-  echo "$url/alerts" > "$T/runner/secrets/discord-alerts.url"
+  echo "$url/report" > "$T/runner/secrets/report-webhook.url"
+  echo "$url/alerts" > "$T/runner/secrets/alert-webhook.url"
   : > "$T/schedule.conf"
 }
 
 teardown() {
   kill "$endpoint_pid" 2>/dev/null
   wait "$endpoint_pid" 2>/dev/null
-  # KEEP=1 leaves the fake VPS behind, to look at what a test produced.
-  if [ -n "${KEEP:-}" ]; then echo "    kept $T"; else rm -rf "$T"; fi
+  # KEEP_FAKE_VPS=1 leaves the fake VPS behind, to look at what a test produced.
+  if [ -n "${KEEP_FAKE_VPS:-}" ]; then echo "    kept $T"; else rm -rf "$T"; fi
 }
 
 # An app whose recipe writes one file with known contents.
@@ -59,10 +60,12 @@ app_failing() {
 }
 
 # The messages the fake Discord received on one webhook (report or alerts), in order.
+# Always succeeds, so `messages alerts | grep -q …` passes on grep's answer alone even
+# when grep stops reading early.
 messages() {
   local f
   for f in $(ls "$T/endpoint/$1"/*.body 2>/dev/null | sort -V); do
-    python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["content"])' "$f"
+    python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["content"])' "$f" 2>/dev/null || true
   done
 }
 
@@ -137,6 +140,15 @@ test_missed_nightly_run_is_made_up_at_the_next_run() {
   assert_count daily/cms 3
 }
 
+test_daily_keeps_one_copy_a_day_when_a_nightly_app_runs_twice() {
+  app_working cms
+  # A new app is backed up the hour it appears, then again at 07:00 the same day.
+  run_at 2026-10-20T03:00:00Z
+  run_at 2026-10-20T07:00:00Z
+  assert_eq "$(backups_in daily/cms | tr '\n' ' ')" "2026-10-20T030000Z-cms.txt.age " || return 1
+  assert_eq "$(backups_in frequent/cms | tr '\n' ' ')" "2026-10-20T070000Z-cms.txt.age "
+}
+
 test_six_hourly_app_goes_to_frequent_and_first_of_day_is_promoted() {
   app_working payload
   echo "payload 6 14" > "$T/schedule.conf"
@@ -151,13 +163,47 @@ test_six_hourly_app_goes_to_frequent_and_first_of_day_is_promoted() {
   assert_eq "$(decrypt daily/payload/2026-10-21T010000Z-payload.txt.age)" "data of payload"
 }
 
+test_shipped_schedule_backs_up_payload_every_six_hours_and_others_nightly() {
+  app_working payload
+  app_working cms
+  cp "$repo/backup-runner/schedule.conf" "$T/schedule.conf"
+  for t in 2026-10-20T07 2026-10-20T13 2026-10-20T19; do run_at "$t:00:00Z"; done
+  assert_count frequent/payload 3 || return 1
+  assert_count daily/cms 1 || return 1
+  assert_eq "$(message_count alerts)" 0 "alerts"
+}
+
 test_bad_schedule_line_alerts_and_falls_back_to_nightly() {
   app_working cms
-  printf '# app  every  keep\ncms  5h  14\n' > "$T/schedule.conf"
+  printf '# app  every  keep\ncms  5h  14\npayload  6  0\n' > "$T/schedule.conf"
+  app_working payload
   run_at 2026-10-20T07:00:00Z
+  run_at 2026-10-20T13:00:00Z
   assert_count daily/cms 1 || return 1
   assert_count frequent/cms 0 || return 1
-  messages alerts | grep -q "schedule.*cms" || fail "no alert about the schedule: $(messages alerts)"
+  messages alerts | grep -q "schedule.*cms" || fail "no alert about cms's line: $(messages alerts)" || return 1
+  # More than one backup a day needs a frequent tier to put them in.
+  messages alerts | grep -q "schedule.*payload" || fail "no alert about payload's line: $(messages alerts)" || return 1
+  assert_count daily/payload 1
+}
+
+test_alert_webhook_being_down_does_not_stop_backups() {
+  app_failing broken
+  app_working cms
+  sed 's|/alerts$|/fail|' "$T/runner/secrets/alert-webhook.url" > "$T/runner/secrets/alert-webhook.url.new"
+  mv "$T/runner/secrets/alert-webhook.url.new" "$T/runner/secrets/alert-webhook.url"
+  run_at 2026-10-20T07:00:00Z
+  assert_eq "$(cat "$T/run.status")" 0 "runner exit status" || return 1
+  assert_count daily/cms 1 || return 1
+  assert_eq "$(message_count report)" 1 "reports" || return 1
+  grep -q "posting to alert-webhook.url failed" "$T/runner/logs/runner.log" || fail "the failed post is not logged"
+}
+
+test_report_notes_an_app_with_no_restore_script() {
+  app_working cms
+  rm "$T/apps/cms/restore.sh"
+  run_at 2026-10-20T07:00:00Z
+  messages report | grep -q "cms has no restore.sh" || fail "report: $(messages report)"
 }
 
 test_first_backup_of_each_month_is_promoted_to_monthly() {
@@ -276,7 +322,7 @@ test_status_page_is_pinged_after_the_report_when_its_secret_is_set() {
   assert_eq "$(message_count ping)" 0 "pings without a secret" || return 1
   grep -q ALERT "$T/runner/logs/runner.log" && fail "a missing ping secret should not alert" && return 1
 
-  echo "$(sed 's|/report$|/ping|' "$T/runner/secrets/discord-report.url")" > "$T/runner/secrets/status-ping.url"
+  sed 's|/report$|/ping|' "$T/runner/secrets/report-webhook.url" >"$T/runner/secrets/status-ping.url"
   echo "s3cret" > "$T/runner/secrets/status-ping.secret"
   run_at 2026-10-21T07:00:00Z
   assert_eq "$(message_count ping)" 1 "pings" || return 1
