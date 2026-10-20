@@ -1,11 +1,11 @@
 # docker-infrastructure
 
-The Traefik reverse proxy for the Vanderbilt VPS. It terminates TLS for `*.flyindycenter.com` and routes traffic to every app container on the box. GitHub Actions deploys it to `/home/deploy/traefik/` on push to `main`.
+The Traefik reverse proxy and backup runner for the Vanderbilt VPS. Traefik terminates TLS for `*.flyindycenter.com` and routes traffic to every app container on the box; the runner backs up every app's data to Cloudflare R2. GitHub Actions deploys both on push to `main`.
 
 [![Build and Deploy](https://github.com/Indy-Center/docker-infrastructure/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/Indy-Center/docker-infrastructure/actions/workflows/build-and-deploy.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-This repository holds Traefik and nothing else. Each app has its own repository, its own `ci.yml` / `build-and-deploy.yml`, and its own `docker-compose.yml` under `/home/deploy/apps/<app>/`. It joins Traefik over a shared Docker network.
+This repository holds the machinery shared by every app on the box, and no app. Each app has its own repository, its own `ci.yml` / `build-and-deploy.yml`, and its own `docker-compose.yml` under `/home/deploy/apps/<app>/`. It joins Traefik over a shared Docker network, and ships its own backup recipe (see [Backups](#backups)).
 
 ## Project layout
 
@@ -14,9 +14,15 @@ This repository holds Traefik and nothing else. Each app has its own repository,
   - `traefik.yml`: static config, meaning the entrypoints (`web` redirects to `websecure`), the `letsencrypt` DNS-01 resolver and the Docker and file providers.
   - `dynamic/`: file-provider config. Traefik watches it, so changes apply without a restart. `tls.yml` requests the wildcard certificate, and `dashboard.yml` routes the dashboard.
 - `examples/app/`: what an app's own repository copies to run behind Traefik: `deploy/docker-compose.yml` (what lands in `~/apps/<app>/`) and `.github/workflows/` (CI and deploy over SSH). GitHub only runs workflows from the repository root, so these never run here.
+- `backup-runner/`: everything deployed to `/home/deploy/backup-runner/`, the backup runner (see [Backups](#backups)).
+  - `run-backups.sh`: the runner. Cron starts it every hour.
+  - `schedule.conf`: how often each app is backed up, and how long its frequent copies are kept.
+  - `install-tools.sh`: installs pinned, checksum-checked age and rclone into `~/backup-runner/bin/`.
+  - `install-cron.sh`: installs the runner's hourly crontab entry for `deploy`.
+- `tests/backup-runner/`: the runner's tests, run in CI against fake apps. Never deployed.
 - `staging/`: a throwaway Traefik against Let's Encrypt staging, used by `staging.yml` to prove certificate issuance. Never deployed.
-- `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up.
-- `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH.
+- `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up, and runs the backup runner's tests.
+- `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH. Then it writes the runner's secrets (rclone config, age key, Discord webhooks), rsyncs `backup-runner/` to `/home/deploy/backup-runner/`, and installs its tools and crontab entry.
 
 ## Certificates
 
@@ -54,7 +60,8 @@ Router names (`myapp` above) must be unique across every app on the box. Keep da
 | ---- | ----- | ------- |
 | `/home/deploy/traefik/` | `deploy` | This repository's deployed config, plus `.env` (not in git) |
 | `/home/deploy/apps/<app>/` | `deploy` | One directory per app, deployed by that app's workflow |
-| `/home/deploy/backups/<app>/` | `deploy` | Staging area for that app's nightly backup before upload |
+| `/home/deploy/backup-runner/` | `deploy` | The backup runner, deployed from `backup-runner/`, plus `secrets/`, `bin/`, `state/` and `logs/` (not in git) |
+| `/home/deploy/backups/<app>/` | `deploy` | Staging area for one app's backup while the runner encrypts and uploads it. Emptied after each one |
 
 Everything lives under the deploy user's home folder because Docker on this VPS is the Canonical snap. Snap confinement stops both the `docker` CLI and the daemon from reading paths such as `/opt`, but allows non-hidden paths under `/home`. The snap's automatic updates would restart every container, so they are held (`snap refresh --hold docker`). Update Docker by hand in a quiet period with `snap refresh docker`.
 
@@ -73,13 +80,98 @@ ssh -L 8080:localhost:8080 <user>@<vps>
 
 ## Backups
 
-Backups go to the Cloudflare R2 bucket `indy-center-backups`. The deploy writes the backup runner's rclone config to `/home/deploy/backup-runner/secrets/rclone.conf` (folder mode 700, file mode 600), with one remote, `r2`. The keys come from this repository's secrets (below), so a rebuilt VPS gets them back from one deploy. To use that config by hand:
+The **runner** (`backup-runner/run-backups.sh`) backs up every app in `/home/deploy/apps/` to the Cloudflare R2 bucket `indy-center-backups`. Cron starts it as `deploy` at minute 7 of every hour. Each run, for each app that is due:
 
-```bash
-RCLONE_CONFIG=~/backup-runner/secrets/rclone.conf rclone lsd r2:indy-center-backups
+1. runs the app's **recipe** (`backup.sh`) with an empty output folder;
+2. encrypts the one file the recipe wrote with `age`;
+3. uploads it to the bucket, then copies the first backup of each day to `daily/` and the first of each month to `monthly/`;
+4. empties the app's staging folder, `/home/deploy/backups/<app>/`.
+
+A failed recipe, encryption or upload raises an **alert** in tech-team-alerts for that app, and the runner moves on to the next. Once a day, after the 07:00 UTC run, it posts the **backup report** to tech-team-notifications, then tells the status page the day's backups finished.
+
+### What an app ships
+
+The runner knows nothing about any app. An app takes part by shipping, in its repository's `deploy/` folder (so in `~/apps/<app>/` on the box), either:
+
+- **`backup.sh` and `restore.sh`**.
+  - `backup.sh` is the recipe. It is called with one argument, an empty folder, and must write exactly one file there holding a consistent copy of all the app's data (a database dump, or an archive of a dump and files). It exits non-zero on any failure.
+  - `restore.sh` is the reverse. It is called with one argument, the path of a file `backup.sh` wrote (decrypted), and puts that data back into the running app, stopping and starting what it needs to.
+- **An empty `no-backup` file**, for an app with nothing to keep. It shows as "no data" in the report.
+
+An app with neither raises an alert every night until it ships one. An app with `backup.sh` but no `restore.sh` is still backed up, and the report notes it.
+
+Both scripts:
+
+- are run with `bash` (the deploy's rsync drops the execute bit), as `deploy`, from the app's folder;
+- may use `docker`, `docker compose` and throwaway containers, but nothing else installed on the host;
+- never encrypt, upload or delete old backups: the runner encrypts and uploads, and R2's lifecycle rules delete;
+- are tested by the app's own CI: back up, wipe, restore, check the data is back.
+
+A recipe still running after 2 hours is stopped and counts as failed. An app does not choose its own schedule; that is in `schedule.conf`, here.
+
+### Schedule file
+
+[`backup-runner/schedule.conf`](backup-runner/schedule.conf) has one line per app: its folder name, how often to back it up (1, 2, 3, 4, 6, 8, 12 or 24 hours, counted from 07:00 UTC), and how many days to keep its frequent copies (0 for none, which only works with 24):
+
+```
+payload  6  14
 ```
 
-The key can write to `indy-center-backups` and read the CMS media buckets, but cannot create or delete buckets. To rotate it, make a new R2 token, update both secrets, and run **Build and Deploy** by hand.
+An app not listed is backed up nightly at 07:00 UTC, with no frequent copies. To change an app's schedule, change its line and merge; the deploy ships it. A line the runner can't read raises an alert, and that app falls back to nightly.
+
+An app is also backed up when its last run was longer ago than its schedule allows. So a run missed while the VPS was down is made up at the next one, and a new app is backed up within the hour it appears.
+
+### Where backups go
+
+```
+indy-center-backups/
+  frequent/<app>/   every backup of an app with frequent copies (payload: every 6 hours),
+                    and any second backup in a day of an app without them
+  daily/<app>/      the first backup of each day, kept 60 days
+  monthly/<app>/    the first backup of each month, kept 12 months
+```
+
+Each file is named for the UTC time of its run and the recipe's file, plus `.age`: `daily/payload/2026-10-20T070000Z-payload.dump.age`. R2's lifecycle rules delete each folder's files at their age, and the bucket lock stops anyone, the VPS included, deleting them sooner. `frequent/` has one age for every app, so it should match the largest "keep" in the schedule file. The runner doesn't delete anything itself, so an app's own "keep" is a note of what it needs; the lifecycle rule sets how long copies actually last.
+
+### On the box
+
+| Path | What it is |
+| ---- | ---------- |
+| `~/backup-runner/secrets/` | The runner's secrets, readable only by `deploy` (folder 700, files 600). Source copies in 1Password |
+| `~/backup-runner/bin/` | The pinned `age`, `age-keygen` and `rclone`, installed by the deploy |
+| `~/backup-runner/logs/runner.log` | Everything each run did, and all the recipes' output. At 5 MB it moves to `runner.log.1`, replacing the older one |
+| `~/backup-runner/state/` | Each app's latest result and last run hour, for the schedule and the report. Losing it means every app is backed up at the next run |
+
+```bash
+tail -f ~/backup-runner/logs/runner.log
+```
+
+The secrets folder holds:
+
+| File | What it is | Where it comes from |
+| ---- | ---------- | ------------------- |
+| `rclone.conf` | rclone config with one remote, `r2`, holding the runner's R2 key | The deploy, from this repository's secrets (below) |
+| `age.key` | The age key that encrypts every backup and decrypts it for a restore. Its source copy is "Backup encryption key (age)" in 1Password: **without it, every backup is unreadable** | The deploy |
+| `report-webhook.url` | Discord webhook "Backups" in tech-team-notifications, for the daily backup report | The deploy |
+| `alert-webhook.url` | Discord webhook "Backup alerts" in tech-team-alerts, for alerts | The deploy |
+| `status-ping.url`, `status-ping.secret` | The status page's "backup finished" endpoint and its secret, sent as `Authorization: Bearer <secret>`. Until both exist the ping is skipped | By hand, once the status page exists |
+
+The deploy writes each file mode 600, so a rebuilt VPS gets them back from one deploy. A missing webhook file is logged and the message skipped, so backups still run without Discord.
+
+Never rotate the age key by replacing it: backups made with the old key need the old key to restore.
+
+The R2 key can write to `indy-center-backups` and read the CMS media buckets, but cannot create or delete buckets. The rebuilt VPS gets it back from one deploy. To rotate it, make a new R2 token, update both secrets, and run **Build and Deploy** by hand. To use the bucket by hand:
+
+```bash
+export PATH=~/backup-runner/bin:$PATH RCLONE_CONFIG=~/backup-runner/secrets/rclone.conf
+rclone lsf r2:indy-center-backups/daily/payload/
+```
+
+### Running and testing it
+
+To run it by hand, as `deploy`: `bash ~/backup-runner/run-backups.sh`. It does exactly what the hourly run does, so it backs up only what is due.
+
+`bash tests/backup-runner/test.sh` runs the tests (CI does on every pull request). Each one builds a fake VPS in a temp folder, with fake apps, a local folder standing in for R2, a test age key and a fake Discord, runs the runner as a chosen time, and checks what landed where and what was sent. It needs `age`, `age-keygen` and `rclone` on `PATH`: `bash backup-runner/install-tools.sh ~/.local/bin` installs them.
 
 ## Deployment
 
@@ -106,6 +198,9 @@ Repository secrets and variables (**Settings → Secrets and variables → Actio
 | ---- | ---- | ----- |
 | `INDY_CENTER_BACKUP_RUNNER_ACCESS_KEY_ID` | secret | Access Key ID of the "R2 backup runner" token (1Password) |
 | `INDY_CENTER_BACKUP_RUNNER_SECRET_ACCESS_KEY` | secret | Secret Access Key of the same token |
+| `INDY_CENTER_BACKUP_RUNNER_AGE_KEY` | secret | The age key: its `AGE-SECRET-KEY-1…` line, with or without the comment lines age-keygen writes above it ("Backup encryption key (age)" in 1Password) |
+| `INDY_CENTER_BACKUP_RUNNER_REPORT_WEBHOOK` | secret | URL of Discord webhook "Backups" (1Password) |
+| `INDY_CENTER_BACKUP_RUNNER_ALERT_WEBHOOK` | secret | URL of Discord webhook "Backup alerts" (1Password) |
 | `CLOUDFLARE_ACCOUNT_ID` | variable | Cloudflare account ID, the first part of the R2 endpoint (`https://<id>.r2.cloudflarestorage.com`) |
 
 The host and user are variables because neither is secret, and GitHub masks a secret's value everywhere it appears in logs. As a secret, `deploy` turned every `deploy/` path in every app's logs into `***/`.
