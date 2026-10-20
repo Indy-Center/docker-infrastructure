@@ -62,3 +62,36 @@ jobs:
               exit 1
             fi
           '
+
+      # Writes the backup runner's rclone config, with its one remote `r2` pointing at
+      # Cloudflare R2. The file goes over stdin so the keys never appear in a command line,
+      # and only deploy can read it. no_check_bucket: the key can't create buckets.
+      - name: Write the backup runner's rclone config
+        env:
+          ACCESS_KEY_ID: ${{ secrets.INDY_CENTER_BACKUP_RUNNER_ACCESS_KEY_ID }}
+          SECRET_ACCESS_KEY: ${{ secrets.INDY_CENTER_BACKUP_RUNNER_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          for name in ACCESS_KEY_ID SECRET_ACCESS_KEY CLOUDFLARE_ACCOUNT_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set; see the README's secrets table"
+              exit 1
+            fi
+          done
+          cat <<EOF | ssh vps '
+            set -e
+            umask 077
+            mkdir -p ~/backup-runner/secrets
+            chmod 700 ~/backup-runner/secrets
+            cat > ~/backup-runner/secrets/rclone.conf.tmp
+            mv ~/backup-runner/secrets/rclone.conf.tmp ~/backup-runner/secrets/rclone.conf
+          '
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = $ACCESS_KEY_ID
+          secret_access_key = $SECRET_ACCESS_KEY
+          endpoint = https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com
+          acl = private
+          no_check_bucket = true
+          EOF

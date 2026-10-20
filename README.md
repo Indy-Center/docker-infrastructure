@@ -71,7 +71,15 @@ ssh -L 8080:localhost:8080 <user>@<vps>
 # then browse to http://localhost:8080/dashboard/
 ```
 
-Backups go to the Cloudflare R2 bucket `vanderbelt-backups`, one prefix per app, with a 60-day lifecycle. rclone's R2 credentials live in the `deploy` user's rclone config on the VPS, not in GitHub.
+## Backups
+
+Backups go to the Cloudflare R2 bucket `indy-center-backups`. The deploy writes the backup runner's rclone config to `/home/deploy/backup-runner/secrets/rclone.conf` (folder mode 700, file mode 600), with one remote, `r2`. The keys come from this repository's secrets (below), so a rebuilt VPS gets them back from one deploy. To use that config by hand:
+
+```bash
+RCLONE_CONFIG=~/backup-runner/secrets/rclone.conf rclone lsd r2:indy-center-backups
+```
+
+The key can write to `indy-center-backups` and read the CMS media buckets, but cannot create or delete buckets. To rotate it, make a new R2 token, update both secrets, and run **Build and Deploy** by hand.
 
 ## Deployment
 
@@ -91,6 +99,14 @@ Organization secrets and variables (**Org Settings → Secrets and variables →
 | `VANDERBILT_DEPLOY_USER` | variable | `deploy` |
 | `VANDERBILT_DEPLOY_SSH_KEY` | secret | Private key of the deploy user's key pair |
 | `VANDERBILT_KNOWN_HOSTS` | secret | The VPS's SSH host key line(s), so the runner can check it's talking to the real VPS |
+
+Repository secrets and variables (**Settings → Secrets and variables → Actions**), used only by this repository's deploy:
+
+| Name | Kind | Value |
+| ---- | ---- | ----- |
+| `INDY_CENTER_BACKUP_RUNNER_ACCESS_KEY_ID` | secret | Access Key ID of the "R2 backup runner" token (1Password) |
+| `INDY_CENTER_BACKUP_RUNNER_SECRET_ACCESS_KEY` | secret | Secret Access Key of the same token |
+| `CLOUDFLARE_ACCOUNT_ID` | variable | Cloudflare account ID, the first part of the R2 endpoint (`https://<id>.r2.cloudflarestorage.com`) |
 
 The host and user are variables because neither is secret, and GitHub masks a secret's value everywhere it appears in logs. As a secret, `deploy` turned every `deploy/` path in every app's logs into `***/`.
 
