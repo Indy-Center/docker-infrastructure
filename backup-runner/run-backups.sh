@@ -14,11 +14,14 @@ APPS_DIR="${APPS_DIR:-$HOME/apps}"
 STAGING_DIR="${STAGING_DIR:-$HOME/backups}"
 BUCKET="${BACKUP_BUCKET:-r2:indy-center-backups}"
 SCHEDULE="${BACKUP_SCHEDULE:-$(dirname "$0")/schedule.conf}"
+MEDIA_BUCKETS="${BACKUP_MEDIA:-$(dirname "$0")/media.conf}"
 SECRETS="$RUNNER_HOME/secrets"
 LOG="$RUNNER_HOME/logs/runner.log"
 
 # A recipe still running after this long is stopped and counts as failed.
 RECIPE_TIMEOUT=2h
+# The same for copying one media bucket.
+MEDIA_COPY_TIMEOUT=1h
 
 # Cron starts with a bare PATH. Add the runner's own age and rclone, and /snap/bin, where
 # the snap's docker lives, so recipes can find it.
@@ -228,6 +231,36 @@ fail_app() {
   alert "Backup of **$app** failed: $what.${detail:+$'\n'\`\`\`$'\n'$detail$'\n'\`\`\`}"
 }
 
+# --- The media copy ------------------------------------------------------------------
+# The CMS keeps uploaded files in R2 buckets, not on the VPS, so no recipe holds them.
+# Each night the runner copies new files from each bucket in media.conf into
+# media/<bucket>/ in the backup bucket. It never deletes or overwrites there, so a
+# database backup from any date still finds its files (decision 0002).
+
+# The media buckets, one name per line, comments and blank lines skipped.
+media_buckets() { sed 's/#.*//' "$MEDIA_BUCKETS" 2>/dev/null | awk 'NF { print $1 }'; }
+
+# Copies new files from one media bucket, on the same R2 account as the backup bucket.
+# --ignore-existing skips every file the copy already has, so nothing is ever replaced.
+# R2 copies the files itself; they never pass through the VPS. A failure alerts.
+copy_media() {
+  local bucket="$1" out="$STAGING_DIR/media-$1.log" status detail
+  # The source is on the backup bucket's rclone remote (r2:), so r2:payload-media.
+  local source="${BUCKET%%:*}:$bucket"
+  log "media copy: $bucket"
+  mkdir -p "$STAGING_DIR"
+  timeout "$MEDIA_COPY_TIMEOUT" rclone copy --ignore-existing -v \
+    "$source" "$BUCKET/media/$bucket" > "$out" 2>&1
+  status=$?
+  cat "$out"
+  if [ "$status" != 0 ]; then
+    # rclone's own error lines; none if timeout stopped it.
+    detail="$(grep -E ' (ERROR|NOTICE) *:' "$out" | tail -n 5)"
+    alert "Media copy of **$bucket** failed: rclone exited $status${detail:+.$'\n'\`\`\`$'\n'$detail$'\n'\`\`\`}"
+  fi
+  rm -f "$out"
+}
+
 # --- Results and the daily report ----------------------------------------------------
 # Each app's latest result (backed up, failed, no data, no recipe) is kept in
 # state/<app>, for the report. Last-good times and sizes come from the bucket itself, so
@@ -289,11 +322,25 @@ send_report() {
         ;;
     esac
   done
+  # The media copy, per bucket, after the apps' total: it only ever grows, so adding it
+  # in would hide the apps' own growth. Its sizes line up under "space".
+  local media="" bucket stats count files
+  for bucket in $(media_buckets); do
+    if stats="$(rclone size --json "$BUCKET/media/$bucket/" 2>/dev/null)"; then
+      count="$(echo "$stats" | grep -o '"count":[0-9]*' | cut -d: -f2)"
+      bytes="$(echo "$stats" | grep -o '"bytes":[0-9]*' | cut -d: -f2)"
+      files="${count:-0} files"
+      [ "$files" = "1 files" ] && files="1 file"
+      media+="$(printf '%-28s %-16s %s' "media/$bucket" "$files" "$(human "$bytes")")"$'\n'
+    else
+      media+="$(printf '%-28s %s' "media/$bucket" "size unknown: rclone size failed")"$'\n'
+    fi
+  done
   post_discord report-webhook.url "**Backups for $DAY** (times UTC)
 \`\`\`
 $(printf '%-16s %-10s %-17s %s' app result "last good" space)
 ${rows}total space: $(human "$total")
-\`\`\`${notes:+$'\n'$notes}"
+${media}\`\`\`${notes:+$'\n'$notes}"
   log "report sent"
 }
 
@@ -337,6 +384,16 @@ for dir in "$APPS_DIR"/*/; do
     record "$app" "no recipe"
   fi
 done
+
+# The media copy is nightly, and made up at the next run if a night was missed, as an
+# app's backup is.
+last_media_copy="$(cat "$STATE/media-copy.last-run" 2>/dev/null || echo 0)"
+if (( HOUR == NIGHTLY_HOUR || RUN_HOUR - last_media_copy > 24 )); then
+  echo "$RUN_HOUR" > "$STATE/media-copy.last-run"
+  for bucket in $(media_buckets); do
+    copy_media "$bucket"
+  done
+fi
 
 # Once a day, after the nightly backups: the report, then the status page's ping. If the
 # nightly run was missed, the first run after it sends them.
