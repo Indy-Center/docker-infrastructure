@@ -81,6 +81,16 @@ RCLONE_CONFIG=~/backup-runner/secrets/rclone.conf rclone lsd r2:indy-center-back
 
 The key can write to `indy-center-backups` and read the CMS media buckets, but cannot create or delete buckets. To rotate it, make a new R2 token, update both secrets, and run **Build and Deploy** by hand.
 
+The deploy also writes the runner's other secrets to the same folder, each mode 600:
+
+| File | What it is |
+| ---- | ---------- |
+| `age.key` | The age key that encrypts every backup and decrypts it for a restore. Its source copy is "Backup encryption key (age)" in 1Password: without it, every backup is unreadable |
+| `report-webhook.url` | Discord webhook "Backups" in tech-team-notifications, for the daily backup report |
+| `alert-webhook.url` | Discord webhook "Backup alerts" in tech-team-alerts |
+
+Never rotate the age key by replacing it: backups made with the old key need the old key to restore.
+
 ## Deployment
 
 `build-and-deploy.yml` calls `ci.yml` first and only deploys if it passes. It rsyncs `traefik/` into `/home/deploy/traefik/`, deleting files removed from the repo but never `.env`. Then it runs `docker compose up -d` over SSH and checks the container is still up 15 seconds later. `main` is protected, so changes go through a pull request with passing checks.
@@ -106,6 +116,9 @@ Repository secrets and variables (**Settings → Secrets and variables → Actio
 | ---- | ---- | ----- |
 | `INDY_CENTER_BACKUP_RUNNER_ACCESS_KEY_ID` | secret | Access Key ID of the "R2 backup runner" token (1Password) |
 | `INDY_CENTER_BACKUP_RUNNER_SECRET_ACCESS_KEY` | secret | Secret Access Key of the same token |
+| `INDY_CENTER_BACKUP_RUNNER_AGE_KEY` | secret | The age key: its `AGE-SECRET-KEY-1…` line, with or without the comment lines age-keygen writes above it ("Backup encryption key (age)" in 1Password) |
+| `INDY_CENTER_BACKUP_RUNNER_REPORT_WEBHOOK` | secret | URL of Discord webhook "Backups" (1Password) |
+| `INDY_CENTER_BACKUP_RUNNER_ALERT_WEBHOOK` | secret | URL of Discord webhook "Backup alerts" (1Password) |
 | `CLOUDFLARE_ACCOUNT_ID` | variable | Cloudflare account ID, the first part of the R2 endpoint (`https://<id>.r2.cloudflarestorage.com`) |
 
 The host and user are variables because neither is secret, and GitHub masks a secret's value everywhere it appears in logs. As a secret, `deploy` turned every `deploy/` path in every app's logs into `***/`.

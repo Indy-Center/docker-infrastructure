@@ -95,3 +95,33 @@ jobs:
           acl = private
           no_check_bucket = true
           EOF
+
+      # Writes the runner's other secrets beside rclone.conf: the age key that encrypts
+      # (and, for restores, decrypts) every backup, and the two Discord webhook URLs.
+      # Each value goes over stdin, never on a command line, and only deploy can read it.
+      - name: Write the backup runner's age key and Discord webhooks
+        env:
+          AGE_KEY: ${{ secrets.INDY_CENTER_BACKUP_RUNNER_AGE_KEY }}
+          REPORT_WEBHOOK: ${{ secrets.INDY_CENTER_BACKUP_RUNNER_REPORT_WEBHOOK }}
+          ALERT_WEBHOOK: ${{ secrets.INDY_CENTER_BACKUP_RUNNER_ALERT_WEBHOOK }}
+        run: |
+          for name in AGE_KEY REPORT_WEBHOOK ALERT_WEBHOOK; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set; see the README's secrets table"
+              exit 1
+            fi
+          done
+          # write_secret FILE: stdin becomes ~/backup-runner/secrets/FILE, mode 600.
+          write_secret() {
+            ssh vps "
+              set -e
+              umask 077
+              mkdir -p ~/backup-runner/secrets
+              chmod 700 ~/backup-runner/secrets
+              cat > ~/backup-runner/secrets/$1.tmp
+              mv ~/backup-runner/secrets/$1.tmp ~/backup-runner/secrets/$1
+            "
+          }
+          printf '%s\n' "$AGE_KEY" | write_secret age.key
+          printf '%s\n' "$REPORT_WEBHOOK" | write_secret report-webhook.url
+          printf '%s\n' "$ALERT_WEBHOOK" | write_secret alert-webhook.url
