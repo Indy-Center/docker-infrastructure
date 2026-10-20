@@ -34,7 +34,9 @@ setup() {
   echo "$url/report" > "$T/runner/secrets/report-webhook.url"
   echo "$url/alerts" > "$T/runner/secrets/alert-webhook.url"
   : > "$T/schedule.conf"
-  : > "$T/media.conf"
+  # One empty media bucket, so the media copy has something to copy and stays quiet.
+  mkdir -p "$T/r2/test-media"
+  echo "test-media" > "$T/media.conf"
 }
 
 teardown() {
@@ -406,6 +408,17 @@ test_failed_media_copy_alerts_and_the_other_bucket_is_still_copied() {
   assert_eq "$(message_count alerts)" 1 "alerts sent" || return 1
   messages alerts | grep -q "Media copy of \*\*aaa-missing\*\* failed" || fail "unexpected alert: $(messages alerts)" || return 1
   assert_eq "$(ls -A "$T/staging")" "" "staging left behind"
+}
+
+test_missing_or_empty_media_config_alerts() {
+  rm "$T/media.conf"
+  run_at 2026-10-20T07:00:00Z
+  assert_eq "$(message_count alerts)" 1 "alerts after a missing media.conf" || return 1
+  messages alerts | grep -q "Media copy skipped: no buckets" || fail "unexpected alert: $(messages alerts)" || return 1
+
+  printf '# no buckets\n\n' > "$T/media.conf"
+  run_at 2026-10-21T07:00:00Z
+  assert_eq "$(message_count alerts)" 2 "alerts after an empty media.conf"
 }
 
 # ---------------------------------------------------------------------------

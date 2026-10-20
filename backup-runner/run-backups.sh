@@ -390,7 +390,10 @@ done
 last_media_copy="$(cat "$STATE/media-copy.last-run" 2>/dev/null || echo 0)"
 if (( HOUR == NIGHTLY_HOUR || RUN_HOUR - last_media_copy > 24 )); then
   echo "$RUN_HOUR" > "$STATE/media-copy.last-run"
-  for bucket in $(media_buckets); do
+  buckets="$(media_buckets)"
+  # A missing, unreadable or empty media.conf would otherwise stop the copy silently.
+  [ -n "$buckets" ] || alert "Media copy skipped: no buckets listed in $MEDIA_BUCKETS (missing, unreadable or empty), so no media was copied."
+  for bucket in $buckets; do
     copy_media "$bucket"
   done
 fi

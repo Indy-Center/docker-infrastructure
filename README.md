@@ -132,7 +132,7 @@ payload-media
 payload-private
 ```
 
-It never deletes or replaces a file in the copy: a file deleted at the source stays, and a file changed at the source keeps its first version. Payload never overwrites an upload, so a database backup from any date still finds its files. R2 copies the files itself; they don't pass through the VPS. A failed copy, or one still running after an hour, raises an alert for that bucket, and the next bucket is still copied. A night missed while the VPS was down is made up at the next run.
+It never deletes or replaces a file in the copy: a file deleted at the source stays, and a file changed at the source keeps its first version. Payload never overwrites an upload, so a database backup from any date still finds its files. R2 copies the files itself; they don't pass through the VPS. A failed copy, or one still running after an hour, raises an alert for that bucket, and the next bucket is still copied. If `media.conf` is missing or lists no buckets, the runner alerts instead of copying nothing quietly. A night missed while the VPS was down is made up at the next run.
 
 To copy another bucket, add its name and merge. It must be on the same Cloudflare account, and the runner's R2 key must be able to read it.
 
