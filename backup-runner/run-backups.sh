@@ -254,9 +254,12 @@ copy_media() {
   status=$?
   cat "$out"
   if [ "$status" != 0 ]; then
+    local why="rclone exited $status"
+    # timeout exits 124 when it stops rclone.
+    [ "$status" = 124 ] && why="still running after $MEDIA_COPY_TIMEOUT, so it was stopped"
     # rclone's own error lines; none if timeout stopped it.
     detail="$(grep -E ' (ERROR|NOTICE) *:' "$out" | tail -n 5)"
-    alert "Media copy of **$bucket** failed: rclone exited $status${detail:+.$'\n'\`\`\`$'\n'$detail$'\n'\`\`\`}"
+    alert "Media copy of **$bucket** failed: $why${detail:+.$'\n'\`\`\`$'\n'$detail$'\n'\`\`\`}"
   fi
   rm -f "$out"
 }

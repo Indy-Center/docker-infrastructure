@@ -421,6 +421,23 @@ test_missing_or_empty_media_config_alerts() {
   assert_eq "$(message_count alerts)" 2 "alerts after an empty media.conf"
 }
 
+test_media_copy_that_times_out_says_so() {
+  # A timeout that stops the media copy at once, as the real one would after an hour.
+  # Recipes still get the real timeout.
+  local real
+  real="$(command -v timeout)"
+  mkdir -p "$T/runner/bin"
+  cat > "$T/runner/bin/timeout" <<EOF
+#!/usr/bin/env bash
+[ "\$2 \$3" = "rclone copy" ] && exit 124
+exec "$real" "\$@"
+EOF
+  chmod +x "$T/runner/bin/timeout"
+  run_at 2026-10-20T07:00:00Z
+  assert_eq "$(message_count alerts)" 1 "alerts sent" || return 1
+  messages alerts | grep -q "Media copy of \*\*test-media\*\* failed: still running after 1h" || fail "unexpected alert: $(messages alerts)"
+}
+
 # ---------------------------------------------------------------------------
 # Runs every test function (or those matching $1), each on its own fake VPS.
 # ---------------------------------------------------------------------------
