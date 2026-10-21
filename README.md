@@ -87,7 +87,9 @@ The **runner** (`backup-runner/run-backups.sh`) backs up every app in `/home/dep
 3. uploads it to the bucket, then copies the first backup of each day to `daily/` and the first of each month to `monthly/`;
 4. empties the app's staging folder, `/home/deploy/backups/<app>/`.
 
-A failed recipe, encryption or upload raises an **alert** in tech-team-alerts for that app, and the runner moves on to the next. Once a day, after the 07:00 UTC run, it posts the **backup report** to tech-team-notifications, then tells the status page the day's backups finished.
+Each night it also updates the **media copy** (below).
+
+A failed recipe, encryption or upload raises an **alert** in tech-team-alerts for that app, and the runner moves on to the next. Once a day, after the 07:00 UTC run, it posts the **backup report** to tech-team-notifications, then tells the status page the day's backups finished. The report lists each app's result, last good backup and space used, then each media bucket's file count and size in the media copy.
 
 ### What an app ships
 
@@ -121,6 +123,19 @@ An app not listed is backed up nightly at 07:00 UTC, with no frequent copies. To
 
 An app is also backed up when its last run was longer ago than its schedule allows. So a run missed while the VPS was down is made up at the next one, and a new app is backed up within the hour it appears.
 
+### Media copy
+
+The CMS keeps uploaded files in R2 buckets, not on the VPS, so its recipe doesn't hold them, and the CMS's own key can delete them. Each night at 07:00 UTC the runner copies any new files from each bucket listed in [`backup-runner/media.conf`](backup-runner/media.conf) into `media/<bucket>/` in `indy-center-backups`:
+
+```
+payload-media
+payload-private
+```
+
+It never deletes or replaces a file in the copy: a file deleted at the source stays, and a file changed at the source keeps its first version. Payload never overwrites an upload, so a database backup from any date still finds its files. R2 copies the files itself; they don't pass through the VPS. A failed copy, or one still running after an hour, raises an alert for that bucket, and the next bucket is still copied. If `media.conf` is missing or lists no buckets, the runner alerts instead of copying nothing quietly. A night missed while the VPS was down is made up at the next run.
+
+To copy another bucket, add its name and merge. It must be on the same Cloudflare account, and the runner's R2 key must be able to read it.
+
 ### Where backups go
 
 ```
@@ -129,9 +144,10 @@ indy-center-backups/
                     and any second backup in a day of an app without them
   daily/<app>/      the first backup of each day, kept 60 days
   monthly/<app>/    the first backup of each month, kept 12 months
+  media/<bucket>/   the media copy: every file ever uploaded to the CMS, not encrypted
 ```
 
-Each file is named for the UTC time of its run and the recipe's file, plus `.age`: `daily/payload/2026-10-20T070000Z-payload.dump.age`. R2's lifecycle rules delete each folder's files at their age, and the bucket lock stops anyone, the VPS included, deleting them sooner. `frequent/` has one age for every app, so it should match the largest "keep" in the schedule file. The runner doesn't delete anything itself, so an app's own "keep" is a note of what it needs; the lifecycle rule sets how long copies actually last.
+Each file is named for the UTC time of its run and the recipe's file, plus `.age`: `daily/payload/2026-10-20T070000Z-payload.dump.age`. R2's lifecycle rules delete each tier's files at their age, and the bucket lock stops anyone, the VPS included, deleting them sooner. `media/` has no lifecycle rule; its lock protects each file for 60 days. `frequent/` has one age for every app, so it should match the largest "keep" in the schedule file. The runner doesn't delete anything itself, so an app's own "keep" is a note of what it needs; the lifecycle rule sets how long copies actually last.
 
 ### On the box
 
