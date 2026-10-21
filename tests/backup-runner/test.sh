@@ -195,6 +195,31 @@ test_report_goes_out_once_a_day_with_each_apps_result() {
   echo "$report" | grep -Eq '^forgotten +no recipe( |$)' || fail "forgotten line: $report" || return 1
 }
 
+# Two servers each send a report to the same channel, so each says which server it is.
+test_report_names_its_server() {
+  app_working cms
+  run_at 2026-10-20T07:00:00Z
+  messages report | head -n 1 | grep -q '^\*\*Backups on testbox for 2026-10-20\*\*' \
+    || fail "report's first line: $(messages report | head -n 1)"
+}
+
+test_runner_without_a_server_name_still_reports_and_says_so() {
+  rm "$T/runner/server"
+  app_working cms
+  run_at 2026-10-20T07:00:00Z
+  messages report | head -n 1 | grep -q '^\*\*Backups on unnamed server for 2026-10-20\*\*' \
+    || fail "report's first line: $(messages report | head -n 1)"
+}
+
+test_alerts_name_their_server() {
+  app_failing broken
+  mkdir -p "$T/apps/forgotten"
+  run_at 2026-10-20T07:00:00Z
+  assert_eq "$(message_count alerts)" 2 "alerts" || return 1
+  messages alerts | grep -q '^testbox: Backup of \*\*broken\*\* failed' || fail "alerts: $(messages alerts)" || return 1
+  messages alerts | grep -q '^testbox: \*\*forgotten\*\* has no backup.sh' || fail "alerts: $(messages alerts)"
+}
+
 test_log_is_size_limited() {
   app_working cms
   mkdir -p "$T/runner/logs"
@@ -237,6 +262,16 @@ test_status_page_is_pinged_after_the_report_when_its_secret_is_set() {
   run_at 2026-10-21T07:00:00Z
   assert_eq "$(message_count ping)" 1 "pings" || return 1
   assert_eq "$(cat "$T/endpoint/ping/1.auth")" "Bearer s3cret"
+}
+
+# The status page tracks each server's ping apart, so one healthy server can't hide a
+# silent one.
+test_status_ping_names_its_server() {
+  app_working cms
+  sed 's|/report$|/ping|' "$T/runner/secrets/report-webhook.url" >"$T/runner/secrets/status-ping.url"
+  echo "s3cret" > "$T/runner/secrets/status-ping.secret"
+  run_at 2026-10-20T07:00:00Z
+  assert_eq "$(cat "$T/endpoint/ping/1.query" 2>/dev/null)" "server=testbox" "ping query"
 }
 
 test_media_copy_adds_new_files_and_never_deletes() {

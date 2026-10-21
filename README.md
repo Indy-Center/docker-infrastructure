@@ -97,6 +97,8 @@ Each night it also updates the **media copy**, and each Sunday it runs the **res
 
 A failed recipe, encryption or upload raises an **alert** in tech-team-alerts for that app, and the runner moves on to the next. Once a day, after the 07:00 UTC run, it posts the **backup report** to tech-team-notifications, then tells the status page the day's backups finished. The report lists each app's result, last good backup and space used, then each media bucket's file count and size in the media copy, then the last restore check's result.
 
+Every server's runner posts to the same two channels, so the report's title (`Backups on vanderbilt for 2026-10-20`) and each alert (`vanderbilt: Backup of …`) name the server, and the status page ping adds `?server=vanderbilt`. The name is the server's settings prefix in lower case, which the deploy writes to `~/backup-runner/server`; the box's own hostname is whatever the provider set, so it isn't used. A runner without that file says `unnamed server`.
+
 ### What an app ships
 
 The runner knows nothing about any app, except the CMS for the [restore check](#restore-check). An app takes part by shipping, in its repository's `deploy/` folder (so in `~/apps/<app>/` on the box), either:
@@ -181,6 +183,7 @@ Each file is named for the UTC time of its run and the recipe's file, plus `.age
 | ---- | ---------- |
 | `~/backup-runner/secrets/` | The runner's secrets, readable only by `deploy` (folder 700, files 600). Source copies in 1Password |
 | `~/backup-runner/bin/` | The pinned `age`, `age-keygen` and `rclone`, installed by the deploy |
+| `~/backup-runner/server` | The server's name for the report, alerts and status ping (`vanderbilt`), written by the deploy |
 | `~/backup-runner/logs/runner.log` | Everything each run did, and all the recipes' output. At 5 MB it moves to `runner.log.1`, replacing the older one |
 | `~/backup-runner/state/` | Each app's latest result and last run hour, and the last restore check's, for the schedule and the report. Losing it means every app is backed up at the next run, and the restore check waits for Sunday |
 | `~/.local/bin/backups` | The `backups` command: runs `~/backup-runner/backups.sh` |

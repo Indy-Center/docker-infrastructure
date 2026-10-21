@@ -145,14 +145,28 @@ jobs:
           printf '%s\n' "$REPORT_WEBHOOK" | write_secret report-webhook.url
           printf '%s\n' "$ALERT_WEBHOOK" | write_secret alert-webhook.url
 
+      # ~/backup-runner/server: the name the runner's report, alerts and status ping give
+      # this server, the matrix prefix in lower case (vanderbilt).
+      - name: Write the backup runner's server name
+        env:
+          SERVER: ${{ matrix.server }}
+        run: |
+          printf '%s\n' "${SERVER,,}" | ssh vps '
+            set -e
+            mkdir -p ~/backup-runner
+            cat > ~/backup-runner/server.tmp
+            mv ~/backup-runner/server.tmp ~/backup-runner/server
+          '
+
       # The backup runner: its scripts and schedule file into ~/backup-runner/. --delete
-      # removes files dropped from backup-runner/, but never the folders that live only on
-      # the box: secrets/, the runner's state/ and logs/, and bin/ (age and rclone).
+      # removes files dropped from backup-runner/, but never what lives only on the box:
+      # secrets/, the runner's state/ and logs/, bin/ (age and rclone), and server.
       # These come after the secrets, so cron never starts a runner that lacks them.
       - name: Sync backup-runner/ to ~/backup-runner/
         run: |
           rsync -rlz --delete \
             --exclude=/secrets/ --exclude=/state/ --exclude=/logs/ --exclude=/bin/ \
+            --exclude=/server \
             backup-runner/ vps:backup-runner/
 
       # Installs the pinned age and rclone into ~/backup-runner/bin (skipped when already

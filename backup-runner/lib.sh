@@ -19,6 +19,12 @@ SECRETS="$RUNNER_HOME/secrets"
 LOG="$RUNNER_HOME/logs/runner.log"
 STATE="$RUNNER_HOME/state"
 
+# The server this runner is on, as build-and-deploy.yml's server list names it
+# (vanderbilt), so the report, alerts and status ping say where they come from. The
+# deploy writes it; the box's own hostname is whatever the provider set.
+SERVER="$(cat "$RUNNER_HOME/server" 2>/dev/null)"
+SERVER="${SERVER:-unnamed server}"
+
 # A recipe still running after this long is stopped and counts as failed.
 RECIPE_TIMEOUT=2h
 
@@ -95,10 +101,11 @@ post_discord() {
     "$(cat "$url_file")" || log "posting to $1 failed"
 }
 
-# An alert is something a person needs to act on. It goes to tech-team-alerts at once.
+# An alert is something a person needs to act on. It goes to tech-team-alerts at once,
+# starting with the server's name, since every server's runner posts there.
 alert() {
   log "ALERT: $1"
-  post_discord alert-webhook.url "$1"
+  post_discord alert-webhook.url "$SERVER: $1"
 }
 
 # --- Uploading -----------------------------------------------------------------------
