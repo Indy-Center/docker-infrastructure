@@ -115,8 +115,16 @@ has_backup() {
 # An app with a frequent tier uploads to frequent/ every time. An app without one uploads
 # its day's first backup straight to daily/, and any extra one that day (a made-up run,
 # or the first run of a new app before 07:00) to frequent/.
+#
+# A backup taken by hand (ONLY_FREQUENT=yes, from `backups now`) goes to frequent/ and is
+# never promoted, so daily/ and monthly/ keep holding the scheduled backups.
 upload() {
   local app="$1" file="$2" name="$3"
+  if [ "${ONLY_FREQUENT:-}" = yes ]; then
+    rclone copyto --immutable "$file" "$BUCKET/frequent/$app/$name"
+    return
+  fi
+
   local uploaded_to first_of_day=no
   has_backup daily "$app" "$DAY" || first_of_day=yes
 

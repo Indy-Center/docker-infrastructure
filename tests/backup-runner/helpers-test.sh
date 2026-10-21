@@ -89,4 +89,42 @@ test_fetch_never_overwrites_a_file() {
   assert_eq "$(cat "$T/out/2026-10-20T070000Z-cms.txt")" "mine"
 }
 
+test_now_backs_up_into_frequent_the_way_the_runner_does() {
+  app_working cms
+  BACKUP_RUNNER_NOW=2026-10-20T05:30:00Z backups now cms > /dev/null || fail "now failed" || return 1
+  assert_eq "$(backups_in frequent/cms)" "2026-10-20T053000Z-cms.txt.age" || return 1
+  assert_eq "$(decrypt frequent/cms/2026-10-20T053000Z-cms.txt.age)" "data of cms" || return 1
+  # Never promoted: daily/ and monthly/ keep the scheduled backups.
+  assert_count daily/cms 0 || return 1
+  assert_count monthly/cms 0 || return 1
+  assert_eq "$(ls -A "$T/staging")" "" "staging left behind" || return 1
+  grep -q "cms: backed up 2026-10-20T053000Z-cms.txt.age" "$T/runner/logs/runner.log" \
+    || fail "not in the runner's log"
+}
+
+test_now_leaves_the_schedule_alone() {
+  app_working cms
+  run_at 2026-10-20T07:00:00Z
+  BACKUP_RUNNER_NOW=2026-10-20T09:00:00Z backups now cms > /dev/null
+  run_at 2026-10-21T07:00:00Z
+  assert_eq "$(backups_in daily/cms | tr '\n' ' ')" \
+    "2026-10-20T070000Z-cms.txt.age 2026-10-21T070000Z-cms.txt.age "
+}
+
+test_now_says_why_when_the_recipe_fails_and_sends_no_alert() {
+  app_failing cms
+  local out
+  out="$(backups now cms)" && fail "now should fail: $out" && return 1
+  echo "$out" | grep -q "connection refused" || fail "the recipe's error is not shown: $out" || return 1
+  assert_eq "$(message_count alerts)" 0 "alerts"
+}
+
+test_now_stops_at_an_app_with_no_recipe() {
+  mkdir -p "$T/apps/stateless"
+  touch "$T/apps/stateless/no-backup"
+  local out
+  out="$(backups now stateless)" && fail "now should fail: $out" && return 1
+  echo "$out" | grep -q "stateless has no backup.sh" || fail "unexpected output: $out"
+}
+
 run_tests "$@"

@@ -19,6 +19,24 @@ umask 077
 # Prints a message to stderr and stops.
 die() { echo "$*" >&2; exit 1; }
 
+# A person is watching a helper, so its failures are shown to them rather than sent to
+# tech-team-alerts (lib.sh's alert, which back_up uses).
+alert() { log "not sent to Discord, as a person ran this: $1"; }
+
+# For the commands that back up or restore: from here on, everything printed also goes
+# to the runner's log, and the command waits for any hourly run to finish first (the run
+# lock), so the two never work on an app at once.
+log_and_lock() {
+  rotate_log
+  exec > >(tee -a "$LOG") 2>&1
+  log "backups $*, run by hand"
+  open_lock
+  if ! flock -n 9; then
+    echo "The hourly run is going; waiting for it to finish (Ctrl-C to give up)…"
+    flock 9
+  fi
+}
+
 # --- Finding backups -------------------------------------------------------------------
 # A backup is named for the UTC time of its run and the recipe's file:
 # 2026-10-20T070000Z-payload.dump.age. The same file can sit in several tiers (the first
@@ -138,12 +156,40 @@ cmd_fetch() {
   echo "Delete it when you are done: rm $FETCHED"
 }
 
+help_now() {
+  cat <<'EOF'
+backups now <app>
+
+Backs up one app straight away, for example right before a risky change. It runs the
+app's backup.sh, encrypts the file and uploads it exactly as the hourly runner does, into
+frequent/ (kept as long as R2's rule on frequent/ keeps files, 14 days today). It is never
+copied to daily/ or monthly/, and the app's schedule carries on as before.
+
+The app keeps running: a recipe takes a consistent copy while it is up. A failure is
+shown here, not sent to Discord.
+
+  backups now payload
+EOF
+}
+
+cmd_now() {
+  local app="${1:-}"
+  need "$app" now
+  [ -d "$APPS_DIR/$app" ] || die "No app $app: there is no folder $APPS_DIR/$app."
+  [ -f "$APPS_DIR/$app/backup.sh" ] || die "$app has no backup.sh in $APPS_DIR/$app, so it can't be backed up."
+  log_and_lock now "$app"
+  echo "Backing up $app into frequent/ with its backup.sh…"
+  ONLY_FREQUENT=yes back_up "$app" || die "The backup of $app failed (above)."
+  echo "Done: frequent/$app/ in $BUCKET. backups list $app shows it."
+}
+
 # --- Help and dispatch -----------------------------------------------------------------
 
 help_all() {
   cat <<'EOF'
 backups: everyday backup jobs, as deploy on the VPS.
 
+  backups now <app>               back up one app now, before a risky change
   backups list <app>              list an app's backups, oldest first
   backups fetch <app> <backup>    download and decrypt one, to look inside it
 
@@ -156,7 +202,7 @@ command="${1:-}"
 shift || true
 case "$command" in
   "" | -h | --help | help) help_all ;;
-  list | fetch)
+  list | fetch | now)
     # Each command's --help, wherever it is given.
     [[ " $* " == *" --help "* || " $* " == *" -h "* ]] && { "help_$command"; exit 0; }
     "cmd_$command" "$@"
