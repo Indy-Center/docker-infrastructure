@@ -455,6 +455,16 @@ cmd_media-get() {
   [ "$key" != "$name" ] && where="the folder ${key%/*}/"
   echo "To put it back in the CMS: Cloudflare dashboard → R2 → $bucket, open $where,"
   echo "and upload it there as $name, so the CMS finds it at $key again."
+  # The dashboard is in a browser on your computer, and your own login can't read
+  # deploy's files, so the file goes through /tmp.
+  local file
+  file="$(realpath "$folder/$name")"
+  echo
+  echo "To get it to your computer: here, as deploy, run"
+  echo "  install -m 644 '$file' '/tmp/$name'"
+  echo "then on your computer"
+  echo "  scp '<you>@<vps>:/tmp/$name' ."
+  echo "and delete /tmp/$name on the VPS once it's uploaded."
 }
 
 # --- Inventory -------------------------------------------------------------------------
