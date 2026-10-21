@@ -13,17 +13,19 @@ source "$(dirname "$0")/lib.sh"
 # Like a recipe's time limit (lib.sh), for copying one media bucket.
 MEDIA_COPY_TIMEOUT=1h
 
-# Everything this run prints goes to the log (lib.sh, "Log").
-rotate_log
-exec >>"$LOG" 2>&1
-
 # Only one run at a time: if the last hour's run is still going (a slow recipe), this
-# one stops, and the next hour's run picks up whatever was missed.
+# one stops, and the next hour's run picks up whatever was missed. A helper command
+# (backups.sh) holds the same lock.
 open_lock
 if ! flock -n 9; then
-  log "run as $NOW skipped: the previous run is still running"
+  log "run as $NOW skipped: the previous run is still running" >>"$LOG" 2>&1
   exit 0
 fi
+
+# Everything this run prints goes to the log (lib.sh, "Log"). Rotated only with the lock
+# held, so no helper command is writing to it at the time.
+rotate_log
+exec >>"$LOG" 2>&1
 
 # --- The schedule ------------------------------------------------------------------
 
