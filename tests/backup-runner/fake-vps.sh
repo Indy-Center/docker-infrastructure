@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The fake VPS the backup runner's tests run against, shared by test.sh (the hourly
 # runner) and helpers-test.sh (the helper commands). Each test builds a fresh one in a
 # temp folder: apps, a schedule file, secrets with a test age key, a local folder standing

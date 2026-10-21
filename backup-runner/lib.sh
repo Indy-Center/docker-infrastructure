@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The runner's shared parts: its settings, logging, Discord, and backing up one app.
 # run-backups.sh (the hourly run) and backups.sh (the helper commands) both source this
 # file, so a backup taken by hand goes through exactly the same steps as a scheduled one.
