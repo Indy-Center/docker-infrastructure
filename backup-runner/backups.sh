@@ -536,7 +536,7 @@ inv_runner() {
   echo "age $(age --version 2>&1), $(rclone version 2>&1 | head -n 1)"
   echo
   echo "Last runs (from $LOG):"
-  grep -E ' (run as|run done)' "$LOG" 2>/dev/null | tail -n 6 || echo "(no log yet)"
+  grep -E ' (run as|run done)' "$LOG" 2>/dev/null | tail -n 6 || echo "(none in the log)"
   echo
   echo "Last alerts:"
   grep -F 'ALERT:' "$LOG" 2>/dev/null | tail -n 5 || echo "(none in the log)"
