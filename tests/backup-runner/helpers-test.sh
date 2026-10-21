@@ -272,20 +272,20 @@ test_scratch_cms_loads_a_plain_sql_backup_and_is_removed_on_request() {
   [ -z "$(docker ps -aq -f name="^$BACKUP_SCRATCH_CONTAINER\$")" ] || fail "the container is still there"
 }
 
-test_scratch_cms_loads_a_custom_format_dump_inside_an_archive() {
+test_scratch_cms_loads_the_cms_recipes_tar_of_a_custom_format_dump() {
   have_docker || return 0
   trap 'docker rm -f -v "$BACKUP_SCRATCH_CONTAINER" > /dev/null 2>&1' EXIT
-  # A pg_dump custom-format dump, made with Postgres 17 itself, packed in a .tar.gz next to
-  # a row-count file, as a recipe might ship it.
+  # What payload's recipe writes: payload.tar, holding payload.dump (pg_dump's custom
+  # format, made here with Postgres 17 itself) and row-counts.tsv.
   docker run -d --name "$BACKUP_SCRATCH_CONTAINER" -e POSTGRES_PASSWORD=x -e POSTGRES_DB=payload postgres:17 > /dev/null
   until docker exec "$BACKUP_SCRATCH_CONTAINER" pg_isready -h 127.0.0.1 -U postgres -q; do sleep 1; done
   scratch_sql "CREATE TABLE pages (slug text); INSERT INTO pages VALUES ('sops');" > /dev/null
   mkdir "$T/pack"
   docker exec "$BACKUP_SCRATCH_CONTAINER" pg_dump -U postgres -Fc payload > "$T/pack/payload.dump"
-  echo '{"pages": 1}' > "$T/pack/counts.json"
-  tar -czf "$T/payload.tar.gz" -C "$T/pack" payload.dump counts.json
+  printf 'pages\t1\n' > "$T/pack/row-counts.tsv"
+  tar -cf "$T/payload.tar" -C "$T/pack" payload.dump row-counts.tsv
   docker rm -f -v "$BACKUP_SCRATCH_CONTAINER" > /dev/null
-  cms_backing_up "$T/payload.tar.gz"
+  cms_backing_up "$T/payload.tar"
   run_at 2026-10-20T07:00:00Z
 
   local out

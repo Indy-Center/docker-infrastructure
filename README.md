@@ -151,7 +151,7 @@ indy-center-backups/
   media/<bucket>/   the media copy: every file ever uploaded to the CMS, not encrypted
 ```
 
-Each file is named for the UTC time of its run and the recipe's file, plus `.age`: `daily/payload/2026-10-20T070000Z-payload.dump.age`. R2's lifecycle rules delete each tier's files at their age, and the bucket lock stops anyone, the VPS included, deleting them sooner. `media/` has no lifecycle rule; its lock protects each file for 60 days. `frequent/` has one age for every app, so it should match the largest "keep" in the schedule file. The runner doesn't delete anything itself, so an app's own "keep" is a note of what it needs; the lifecycle rule sets how long copies actually last.
+Each file is named for the UTC time of its run and the recipe's file, plus `.age`: `daily/payload/2026-10-20T070000Z-payload.tar.age`. R2's lifecycle rules delete each tier's files at their age, and the bucket lock stops anyone, the VPS included, deleting them sooner. `media/` has no lifecycle rule; its lock protects each file for 60 days. `frequent/` has one age for every app, so it should match the largest "keep" in the schedule file. The runner doesn't delete anything itself, so an app's own "keep" is a note of what it needs; the lifecycle rule sets how long copies actually last.
 
 ### On the box
 
@@ -204,11 +204,11 @@ rclone lsf r2:indy-center-backups/daily/payload/
 | `backups media-get <bucket>/<path> [folder]` | Downloads one file from the media copy, such as an image deleted from the CMS, and says where to upload it back in Cloudflare's dashboard (the runner's R2 key can only read the CMS's buckets) |
 | `backups inventory` | Prints the VPS's facts under headings, for planning work: system, memory, disk, containers, images, volumes and sizes, networks, each `~/apps` folder's backup files, and the runner's last runs, alerts and results. It only reads. Agents have no access to the VPS, so paste them the whole output |
 
-`<backup>` is a name from `backups list` (`2026-10-20T070000Z-payload.dump.age`), the start of one (`2026-10-20T07`), or `latest`. A start that matches more than one backup lists the matches and stops.
+`<backup>` is a name from `backups list` (`2026-10-20T070000Z-payload.tar.age`), the start of one (`2026-10-20T07`), or `latest`. A start that matches more than one backup lists the matches and stops.
 
 Only `restore` changes a live app, and it asks first. `now` and `restore` write to `runner.log` as the hourly runs do, and take the run lock: they wait for a running hourly run to finish, and an hourly run that starts while they work steps aside until the next hour, which makes up anything missed.
 
-`scratch-cms` finds the database dump in whatever the CMS's recipe wrote: a `pg_dump` custom-format file (loaded with `pg_restore`), plain SQL (loaded with `psql`), either gzipped, or a tar archive holding one of those beside other files. Ownership and grants are left out, since the scratch database has only the `postgres` user.
+`scratch-cms` finds the database dump in whatever the CMS's recipe wrote. payload's recipe writes `payload.tar`, holding `payload.dump` and `row-counts.tsv`, so it unpacks that and loads `payload.dump`. It also takes a `pg_dump` custom-format file (loaded with `pg_restore`), plain SQL (loaded with `psql`), either gzipped, or a tar archive holding one of those beside other files. Ownership and grants are left out, since the scratch database has only the `postgres` user.
 
 The runbooks for recovering one app or rebuilding the VPS, being written for tech.flyindycenter.com's Operations section, are built on these commands.
 

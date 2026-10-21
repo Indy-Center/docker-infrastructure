@@ -39,7 +39,7 @@ log_and_lock() {
 
 # --- Finding backups -------------------------------------------------------------------
 # A backup is named for the UTC time of its run and the recipe's file:
-# 2026-10-20T070000Z-payload.dump.age. The same file can sit in several tiers (the first
+# 2026-10-20T070000Z-payload.tar.age. The same file can sit in several tiers (the first
 # of a day is copied to daily/, and so on), and all copies are the same backup.
 
 # Every backup of an app, one line each, oldest first: "<name> <bytes> <tiers…>".
@@ -246,7 +246,8 @@ scratch_exists() { [ -n "$(docker ps -aq -f name="^$SCRATCH_CONTAINER\$")" ]; }
 
 # Finds the database dump in a decrypted CMS backup and prints its path. The recipe may
 # write the dump itself (pg_dump's custom format, or plain SQL), gzipped or not, or a tar
-# archive holding one beside other files (row counts, say). Unpacks into the file's folder.
+# archive holding one beside other files. payload's recipe writes the last: payload.tar,
+# holding payload.dump (custom format) and row-counts.tsv. Unpacks into the file's folder.
 find_dump() {
   local file="$1" folder
   folder="$(dirname "$file")"
