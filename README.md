@@ -145,7 +145,7 @@ To copy another bucket, add its name and merge. It must be on the same Cloudflar
 Every Sunday, in the 07:00 UTC run after the backups, the runner proves the newest CMS backup is usable with `backups restore-check` (a [helper command](#helper-commands), so you can also run it by hand). It:
 
 1. downloads the newest `payload` backup in any tier and decrypts it;
-2. unpacks `payload.tar`, which holds `payload.dump` and `row-counts.tsv` (each table in `public` and its row count, taken from the same snapshot as the dump by payload's recipe);
+2. unpacks `payload.tar`, which holds `payload.dump` and `row-counts.tsv` (each table in `public` and its row count, counted by payload's recipe at the same moment as the dump);
 3. starts a throwaway Postgres 17 container, `backups-restore-check`, with no published port;
 4. loads the dump with `pg_restore --no-owner --no-privileges`;
 5. checks each table in `row-counts.tsv` is there with at least that many rows.
