@@ -30,13 +30,12 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Makes an empty staging folder for this command, ~/backups/<name>, that only deploy can
-# open and that is removed when the command ends. Sets STAGE to its path.
+# Makes a new staging folder for this command, ~/backups/.<name>.XXXXXX, that only deploy
+# can open and that is removed when the command ends. Sets STAGE to its path. Its own
+# name keeps it apart from the runner's ~/backups/<app> and from other helper commands.
 new_stage() {
-  STAGE="$STAGING_DIR/$1"
-  rm -rf "$STAGE"
   mkdir -p "$STAGING_DIR"
-  mkdir -m 700 "$STAGE"
+  STAGE="$(mktemp -d "$STAGING_DIR/.$1.XXXXXX")" || die "Couldn't make a folder in $STAGING_DIR."
   remove_on_exit "$STAGE"
 }
 
