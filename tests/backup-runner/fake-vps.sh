@@ -61,10 +61,11 @@ app_failing() {
 # These need Docker and a real Postgres 17. A test that uses them starts with
 #   have_docker || return 0
 
-# Test containers have their own names, so they never meet real ones on the same machine.
-# The dump maker's name is this test file's own, so test.sh and helpers-test.sh can run
-# at the same time.
+# Test containers have their own names (and the scratch database its own port), so they
+# never meet real ones on the same machine. The dump maker's name is this test file's
+# own, so test.sh and helpers-test.sh can run at the same time.
 export BACKUP_RESTORE_CHECK_CONTAINER=backups-restore-check-test
+export BACKUP_SCRATCH_CONTAINER=backups-scratch-cms-test BACKUP_SCRATCH_PORT=25432
 DUMP_MAKER="backups-test-dump-maker-$$"
 
 # Whether Docker is usable here. Without it the tests that need it pass trivially, except
@@ -93,36 +94,42 @@ cms_backing_up() {
 # role, as the live CMS's tables are; a throwaway database has no such role, so a load
 # must leave ownership out.
 make_cms_dump() {
-  docker run -d --name "$DUMP_MAKER" -e POSTGRES_PASSWORD=x -e POSTGRES_DB=payload postgres:17 > /dev/null
-  local tries=0
-  until docker exec "$DUMP_MAKER" pg_isready -h 127.0.0.1 -U postgres -q; do
-    (( ++tries < 60 )) || fail "the dump maker's Postgres did not start within a minute" || return 1
-    sleep 1
-  done
+  # The runner's own start_postgres, sourced in a subshell so lib.sh's settings stay there.
+  local why
+  why="$(source "$repo/backup-runner/lib.sh"; start_postgres "$DUMP_MAKER" x)" \
+    || fail "the dump maker's Postgres: $why" || return 1
   docker exec "$DUMP_MAKER" psql -q -U postgres -d payload -c "CREATE ROLE payload; CREATE TABLE pages (slug text); INSERT INTO pages VALUES ('sops'); ALTER TABLE pages OWNER TO payload;"
   docker exec "$DUMP_MAKER" pg_dump -U postgres -Fc payload > "$1"
   docker rm -f -v "$DUMP_MAKER" > /dev/null
 }
 
-# A fake CMS whose recipe writes payload.tar as payload's does: make_cms_dump's dump as
+# A fake CMS whose recipe writes payload.tar as payload's does: the given dump as
 # payload.dump, and the given row counts (printf text: "table\trows\n" lines) as
 # row-counts.tsv.
-cms_backup_with_counts() {
-  mkdir "$T/pack"
-  make_cms_dump "$T/pack/payload.dump"
+#   cms_backup_of <dump> <counts>
+cms_backup_of() {
+  mkdir -p "$T/pack"
+  cp "$1" "$T/pack/payload.dump"
   # The counts are a format string on purpose, so a test can write \t and \n.
   # shellcheck disable=SC2059
-  printf "$1" > "$T/pack/row-counts.tsv"
+  printf "$2" > "$T/pack/row-counts.tsv"
   tar -cf "$T/payload.tar" -C "$T/pack" payload.dump row-counts.tsv
   cms_backing_up "$T/payload.tar"
 }
 
-# Whether the restore check's container exists, running or not.
-restore_check_container_exists() { [ -n "$(docker ps -aq -f name="^$BACKUP_RESTORE_CHECK_CONTAINER\$")" ]; }
+# The same, with make_cms_dump's dump: a good backup, whatever the counts say.
+#   cms_backup_with_counts <counts>
+cms_backup_with_counts() {
+  make_cms_dump "$T/good.dump" || return 1
+  cms_backup_of "$T/good.dump" "$1"
+}
 
-# Removes the restore check's containers when a test ends, however it ends.
-remove_check_on_exit() {
-  trap 'docker rm -f -v "$BACKUP_RESTORE_CHECK_CONTAINER" "$DUMP_MAKER" > /dev/null 2>&1' EXIT
+# Whether a container exists, running or not.
+container_exists() { [ -n "$(docker ps -aq -f name="^$1\$")" ]; }
+
+# Removes every test container when a test ends, however it ends.
+remove_test_containers_on_exit() {
+  trap 'docker rm -f -v "$BACKUP_RESTORE_CHECK_CONTAINER" "$BACKUP_SCRATCH_CONTAINER" "$DUMP_MAKER" > /dev/null 2>&1' EXIT
 }
 
 # The messages the fake Discord received on one webhook (report or alerts), in order.

@@ -13,10 +13,10 @@ set -uo pipefail
 # made exactly the way a scheduled one is.
 source "$(dirname "$0")/lib.sh"
 
-# Prints a message to stderr and stops. A command made of steps sets STEP first, and the
-# message then names the step that failed.
-STEP=""
-die() { echo "${STEP:+Failed at $STEP: }$*" >&2; exit 1; }
+# Prints a message to stderr and stops. While DIE_STEP is set, the message starts by
+# naming it: "Failed at <step>: …". A command made of steps sets it before each one.
+DIE_STEP=""
+die() { echo "${DIE_STEP:+Failed at $DIE_STEP: }$*" >&2; exit 1; }
 
 # --- Cleaning up -----------------------------------------------------------------------
 # Decrypted backups and recipe output hold members' data, so whatever a command puts in
@@ -321,35 +321,6 @@ find_dump() {
   return 1
 }
 
-# A new random password for a throwaway database.
-new_password() { tr -dc a-z0-9 < /dev/urandom | head -c 20; }
-
-# Starts a throwaway Postgres 17 (the CMS's version) with an empty database "payload",
-# and waits until it answers. Any further arguments are docker run options, such as a
-# published port. Returns 1 if docker run fails, 2 if it does not answer within a minute.
-#   start_postgres <container> <password> [docker run options…]
-start_postgres() {
-  local name="$1" password="$2"
-  shift 2
-  docker run -d --name "$name" -e POSTGRES_PASSWORD="$password" -e POSTGRES_DB=payload \
-    "$@" postgres:17 > /dev/null || return 1
-  # Ready once it answers over TCP: while it sets itself up it listens on a socket only.
-  local tries=0
-  until docker exec "$name" pg_isready -h 127.0.0.1 -U postgres -q; do
-    (( ++tries < 60 )) || return 2
-    sleep 1
-  done
-}
-
-# Loads a dump into a throwaway Postgres's "payload" database with pg_restore, over
-# stdin, so nothing needs copying into the container. Ownership and grants are left out:
-# the dump's tables belong to the live CMS's "payload" role, and the throwaway database
-# has only the postgres user. Returns pg_restore's exit status.
-#   load_dump <container> <dump>
-load_dump() {
-  docker exec -i "$1" pg_restore -U postgres -d payload --no-owner --no-privileges < "$2"
-}
-
 help_scratch-cms() {
   cat <<'EOF'
 backups scratch-cms <backup>
@@ -390,13 +361,11 @@ cmd_scratch-cms() {
 
   # 2. A throwaway Postgres 17 with a new random password, on loopback only. -v on
   #    removal deletes its data volume too.
-  local password status
+  local password why status
   password="$(new_password)"
   echo "Starting a throwaway Postgres 17, $SCRATCH_CONTAINER…"
-  start_postgres "$SCRATCH_CONTAINER" "$password" -p "127.0.0.1:$SCRATCH_PORT:5432"
-  status=$?
-  [ "$status" = 1 ] && die "docker run failed."
-  [ "$status" = 2 ] && die "Postgres did not start within a minute: docker logs $SCRATCH_CONTAINER shows why. Remove it with: backups scratch-cms remove"
+  why="$(start_postgres "$SCRATCH_CONTAINER" "$password" -p "127.0.0.1:$SCRATCH_PORT:5432")" \
+    || die "$why docker logs $SCRATCH_CONTAINER may show why. Remove it with: backups scratch-cms remove"
 
   # 3. Load the dump.
   echo "Loading $FOUND_NAME…"
@@ -484,11 +453,11 @@ cmd_restore-check() {
   [ "${BACKUP_RUN_LOCK_HELD:-}" = yes ] || lock_and_log restore-check
 
   # 1. The newest backup, decrypted into its own staging folder, removed however this ends.
-  STEP="download and decrypt"
+  DIE_STEP="download and decrypt"
   new_stage restore-check
   fetch_into "$CMS_APP" latest "$STAGE"
 
-  STEP="unpack"
+  DIE_STEP="unpack"
   local dump counts
   dump="$(find_dump "$FETCHED")" || die "see above."
   counts="$(dirname "$dump")/row-counts.tsv"
@@ -496,26 +465,26 @@ cmd_restore-check() {
 
   # 2. A throwaway Postgres 17, on no port, removed with its data however this ends. One
   #    left by a check that was killed outright is removed first.
-  STEP="start Postgres"
+  DIE_STEP="start Postgres"
   echo "Starting a throwaway Postgres 17, $RESTORE_CHECK_CONTAINER…"
   docker rm -f -v "$RESTORE_CHECK_CONTAINER" > /dev/null 2>&1
   remove_container_on_exit "$RESTORE_CHECK_CONTAINER"
-  start_postgres "$RESTORE_CHECK_CONTAINER" "$(new_password)" \
-    || die "Postgres did not start: docker run failed, or it did not answer within a minute."
+  local why
+  why="$(start_postgres "$RESTORE_CHECK_CONTAINER" "$(new_password)")" || die "$why"
 
   # 3. Load it.
-  STEP="load"
+  DIE_STEP="load"
   echo "Loading $FOUND_NAME…"
   load_dump "$RESTORE_CHECK_CONTAINER" "$dump"
   local status=$?
   [ "$status" = 0 ] || die "pg_restore exited $status (its errors are above)."
 
   # 4. Every table there, with at least the rows counted at backup time.
-  STEP="check tables"
+  DIE_STEP="check tables"
   local problems
   problems="$(check_row_counts "$RESTORE_CHECK_CONTAINER" "$counts")" || die "$problems"
 
-  STEP=""
+  DIE_STEP=""
   echo "Restore check passed: $FOUND_NAME loads, and every table in its row-counts.tsv holds at least the rows counted at backup time."
 }
 

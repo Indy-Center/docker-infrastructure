@@ -342,7 +342,7 @@ EOF
 
 test_restore_check_runs_on_sunday_at_the_nightly_hour_and_is_in_that_days_report() {
   have_docker || return 0
-  remove_check_on_exit
+  remove_test_containers_on_exit
   cms_backup_with_counts 'pages\t1\n'
   run_at 2026-10-24T07:00:00Z
   messages report | grep -Eq '^restore check +not run yet$' || fail "Saturday's report: $(messages report)" || return 1
@@ -353,7 +353,7 @@ test_restore_check_runs_on_sunday_at_the_nightly_hour_and_is_in_that_days_report
     || fail "Sunday's backup was not checked" || return 1
   messages report | grep -Eq '^restore check +passed 2026-10-25 07:00$' || fail "Sunday's report: $(messages report)" || return 1
   assert_eq "$(message_count alerts)" 0 "alerts" || return 1
-  ! restore_check_container_exists || fail "the container is still there"
+  ! container_exists "$BACKUP_RESTORE_CHECK_CONTAINER" || fail "the container is still there"
 }
 
 test_failed_restore_check_alerts_naming_the_step_and_the_report_says_failed() {
