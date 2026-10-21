@@ -22,6 +22,24 @@ backups() {
 # Tests
 # ---------------------------------------------------------------------------
 
+test_every_command_has_help_and_runs_nothing_for_it() {
+  local cmd out out_cmd
+  out="$(backups --help)" || fail "backups --help failed" || return 1
+  for cmd in now list fetch restore scratch-cms media-find media-get inventory; do
+    echo "$out" | grep -q "backups $cmd" || fail "backups --help leaves out $cmd: $out" || return 1
+    out_cmd="$(backups "$cmd" --help)" || fail "backups $cmd --help failed: $out_cmd" || return 1
+    echo "$out_cmd" | head -n 1 | grep -q "^backups $cmd" || fail "$cmd's help: $out_cmd" || return 1
+  done
+  # Help never runs the command: no log was started.
+  [ ! -e "$T/runner/logs" ] || fail "a --help started the log"
+}
+
+test_a_command_missing_its_arguments_shows_its_help() {
+  local out
+  out="$(backups fetch)" && fail "fetch with no arguments should fail" && return 1
+  echo "$out" | grep -q "^backups fetch <app> <backup>" || fail "unexpected output: $out"
+}
+
 test_list_shows_an_apps_backups_oldest_first_with_their_tiers() {
   app_working cms
   echo "cms 6 14" > "$T/schedule.conf"
