@@ -60,6 +60,8 @@ networks:
 
 Router names (`myapp` above) must be unique across every app on the box. Keep databases and other internal services on the app's own network, not on `traefik-shared`. Don't publish ports on the host. Traefik reaches the container over the network.
 
+An app runs on one server, picked by that server's settings prefix in `SERVER` at the top of its [`build-and-deploy.yml`](examples/app/.github/workflows/build-and-deploy.yml) (`SERVER: VANDERBILT` reads `VANDERBILT_HOST` and the other three [settings](#deployment)). An org admin gives the app's repository access to those four settings, and its hostname's DNS record points at that server.
+
 ## VPS layout
 
 | Path | Owner | Purpose |
