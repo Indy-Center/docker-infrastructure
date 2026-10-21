@@ -272,6 +272,19 @@ test_restore_hung_up_at_its_question_leaves_nothing_behind() {
   [ ! -e "$T/restore-got" ] || fail "restore.sh ran"
 }
 
+test_restore_and_now_run_the_apps_scripts_with_the_usual_umask() {
+  # The helpers keep what they write to themselves, but an app's own scripts get the
+  # umask they would get anywhere else, so files they make stay readable as usual.
+  app_working cms
+  echo "umask > \"$T/restore-umask\"" > "$T/apps/cms/restore.sh"
+  echo "umask > \"$T/backup-umask\"; echo data > \"\$1/cms.txt\"" > "$T/apps/cms/backup.sh"
+  umask 022
+  backups now cms > /dev/null || fail "now failed" || return 1
+  echo cms | backups restore cms latest > /dev/null || fail "restore failed" || return 1
+  assert_eq "$(cat "$T/backup-umask")" 0022 "backup.sh's umask" || return 1
+  assert_eq "$(cat "$T/restore-umask")" 0022 "restore.sh's umask"
+}
+
 test_restore_stops_at_an_app_with_no_restore_script() {
   app_working cms
   rm "$T/apps/cms/restore.sh"

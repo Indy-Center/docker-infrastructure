@@ -13,9 +13,6 @@ set -uo pipefail
 # made exactly the way a scheduled one is.
 source "$(dirname "$0")/lib.sh"
 
-# Decrypted backups hold members' data: everything this script writes is for deploy only.
-umask 077
-
 # Prints a message to stderr and stops.
 die() { echo "$*" >&2; exit 1; }
 
@@ -118,6 +115,8 @@ fetch_into() {
   rclone copyto "$BUCKET/$FOUND_TIER/$app/$FOUND_NAME" "$work/$FOUND_NAME" || die "Download failed."
   age -d -i "$SECRETS/age.key" -o "$work/decrypted" "$work/$FOUND_NAME" \
     || die "Decrypting failed: is $SECRETS/age.key the key these backups were made with?"
+  # It holds members' data: only deploy may read it, wherever it is moved to.
+  chmod 600 "$work/decrypted"
   mv "$work/decrypted" "$FETCHED"
 }
 
