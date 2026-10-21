@@ -91,9 +91,9 @@ The **runner** (`backup-runner/run-backups.sh`) backs up every app in `/home/dep
 3. uploads it to the bucket, then copies the first backup of each day to `daily/` and the first of each month to `monthly/`;
 4. empties the app's staging folder, `/home/deploy/backups/<app>/`.
 
-Each night it also updates the **media copy** (below).
+Each night it also updates the **media copy**, and each Sunday it runs the **restore check** (both below).
 
-A failed recipe, encryption or upload raises an **alert** in tech-team-alerts for that app, and the runner moves on to the next. Once a day, after the 07:00 UTC run, it posts the **backup report** to tech-team-notifications, then tells the status page the day's backups finished. The report lists each app's result, last good backup and space used, then each media bucket's file count and size in the media copy.
+A failed recipe, encryption or upload raises an **alert** in tech-team-alerts for that app, and the runner moves on to the next. Once a day, after the 07:00 UTC run, it posts the **backup report** to tech-team-notifications, then tells the status page the day's backups finished. The report lists each app's result, last good backup and space used, then each media bucket's file count and size in the media copy, then the last restore check's result.
 
 ### What an app ships
 
@@ -140,6 +140,18 @@ It never deletes or replaces a file in the copy: a file deleted at the source st
 
 To copy another bucket, add its name and merge. It must be on the same Cloudflare account, and the runner's R2 key must be able to read it.
 
+### Restore check
+
+Every Sunday, in the 07:00 UTC run after the backups, the runner proves the newest CMS backup is usable with `backups restore-check` (a [helper command](#helper-commands), so you can also run it by hand). It:
+
+1. downloads the newest `payload` backup in any tier and decrypts it;
+2. unpacks `payload.tar`, which holds `payload.dump` and `row-counts.tsv` (each table in `public` and its row count, taken from the same snapshot as the dump by payload's recipe);
+3. starts a throwaway Postgres 17 container, `backups-restore-check`, with no published port;
+4. loads the dump with `pg_restore --no-owner --no-privileges`;
+5. checks each table in `row-counts.tsv` is there with at least that many rows.
+
+The container and the decrypted backup are removed afterwards, pass or fail. A failure raises an alert naming the step that failed (`Failed at load: pg_restore exited 1`, `Failed at check tables: table users is missing`), and the report shows `restore check  failed` with its time until the next check passes. A check still running after 30 minutes is stopped and counts as failed. A Sunday missed while the VPS was down is made up a week after the last check. A new box waits for its first Sunday. A box without `payload` runs no check.
+
 ### Where backups go
 
 ```
@@ -160,7 +172,7 @@ Each file is named for the UTC time of its run and the recipe's file, plus `.age
 | `~/backup-runner/secrets/` | The runner's secrets, readable only by `deploy` (folder 700, files 600). Source copies in 1Password |
 | `~/backup-runner/bin/` | The pinned `age`, `age-keygen` and `rclone`, installed by the deploy |
 | `~/backup-runner/logs/runner.log` | Everything each run did, and all the recipes' output. At 5 MB it moves to `runner.log.1`, replacing the older one |
-| `~/backup-runner/state/` | Each app's latest result and last run hour, for the schedule and the report. Losing it means every app is backed up at the next run |
+| `~/backup-runner/state/` | Each app's latest result and last run hour, and the last restore check's, for the schedule and the report. Losing it means every app is backed up at the next run, and the restore check waits for Sunday |
 | `~/.local/bin/backups` | The `backups` command: runs `~/backup-runner/backups.sh` |
 
 ```bash
@@ -200,6 +212,7 @@ rclone lsf r2:indy-center-backups/daily/payload/
 | `backups restore <app> <backup>` | Fetches and decrypts a backup, asks you to type the app's name, then runs the app's `restore.sh` with the file, which replaces the app's live data. Stops at a message if the app has no `restore.sh`. The decrypted file is deleted afterwards |
 | `backups scratch-cms <backup>` | Loads a CMS backup into a throwaway Postgres 17 container, `backups-scratch-cms`, beside the live CMS, and prints how to connect: `docker exec` on the VPS, or an SSH tunnel to `127.0.0.1:15432` from your computer. The live CMS is never touched |
 | `backups scratch-cms remove` | Removes that container and its data |
+| `backups restore-check` | Loads the newest CMS backup into a throwaway Postgres 17 and checks its tables and row counts, then removes it: the weekly [restore check](#restore-check), run now. A failure is shown, not sent to Discord |
 | `backups media-find <text>` | Finds files in the media copy whose path contains the text, in any case |
 | `backups media-get <bucket>/<path> [folder]` | Downloads one file from the media copy, such as an image deleted from the CMS, and says where to upload it back in Cloudflare's dashboard (the runner's R2 key can only read the CMS's buckets) |
 | `backups inventory` | Prints the VPS's facts under headings, for planning work: system, memory, disk, containers, images, volumes and sizes, networks, each `~/apps` folder's backup files, and the runner's last runs, alerts and results. It only reads. Agents have no access to the VPS, so paste them the whole output |
@@ -216,7 +229,7 @@ The runbooks for recovering one app or rebuilding the VPS, being written for tec
 
 To run it by hand, as `deploy`: `bash ~/backup-runner/run-backups.sh`. It does exactly what the hourly run does, so it backs up only what is due. To back up one app now, use `backups now <app>`.
 
-`bash tests/backup-runner/test.sh` runs the runner's tests, and `bash tests/backup-runner/helpers-test.sh` the helper commands' (CI runs both on every pull request). Each test builds a fake VPS in a temp folder, with fake apps, a local folder standing in for R2, a test age key and a fake Discord. The runner's tests run it as a chosen time and check what landed where and what was sent; the helpers' tests run each command against backups the runner made, and check what it printed, downloaded, decrypted or restored. They need `age`, `age-keygen` and `rclone` on `PATH`: `bash backup-runner/install-tools.sh ~/.local/bin` installs them. The `scratch-cms` tests also need Docker, and pass without running when it is missing.
+`bash tests/backup-runner/test.sh` runs the runner's tests, and `bash tests/backup-runner/helpers-test.sh` the helper commands' (CI runs both on every pull request). Each test builds a fake VPS in a temp folder, with fake apps, a local folder standing in for R2, a test age key and a fake Discord. The runner's tests run it as a chosen time and check what landed where and what was sent; the helpers' tests run each command against backups the runner made, and check what it printed, downloaded, decrypted or restored. They need `age`, `age-keygen` and `rclone` on `PATH`: `bash backup-runner/install-tools.sh ~/.local/bin` installs them. The `scratch-cms` and restore check tests that load a dump also need Docker and the `postgres:17` image, and pass without running when Docker is missing.
 
 ## Deployment
 
