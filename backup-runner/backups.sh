@@ -414,6 +414,102 @@ cmd_media-get() {
   echo "and upload it there as $name, so the CMS finds it at $key again."
 }
 
+# --- Inventory -------------------------------------------------------------------------
+
+help_inventory() {
+  cat <<'EOF'
+backups inventory
+
+Prints, each under its own heading, the facts needed to plan work on the VPS: the
+system, memory, disk, Docker's containers, images, volumes (with sizes) and networks,
+each folder in ~/apps with the backup files it ships, and the backup runner's last run.
+Agents have no access to the VPS, so run this and paste the whole output to them.
+
+It only reads: it changes nothing, and needs no sudo.
+
+  backups inventory
+EOF
+}
+
+# Prints one heading, then the output of a command in a code block. A failing command
+# prints its error and the inventory carries on.
+section() {
+  local title="$1"
+  shift
+  printf '\n## %s\n```\n' "$title"
+  "$@" 2>&1 || echo "(that failed, exit $?)"
+  echo '```'
+}
+
+# The parts of the inventory that need more than one command.
+inv_system() {
+  (. /etc/os-release && echo "$PRETTY_NAME")
+  uname -srm
+  echo "$(nproc) CPUs, $(uptime -p)"
+  echo "docker: $(command -v docker || echo 'not found') $(docker version --format '{{.Server.Version}}' 2>&1)"
+}
+
+# The disks holding / and /home, each once when they are the same disk.
+inv_disk() { df -h / /home | awk '!seen[$0]++'; }
+
+# Volume sizes come from `docker system df -v`; only its volumes part is shown.
+inv_volumes() {
+  local all
+  all="$(docker system df -v)" || { echo "$all"; return 1; }
+  if grep -q '^Local Volumes' <<< "$all"; then
+    awk '/^Local Volumes/ { on = 1 } /^Build cache/ { on = 0 } on' <<< "$all"
+  else
+    echo "$all"
+  fi
+}
+
+# Each app folder, and which of the files the runner looks for (decision 0005) it has.
+inv_apps() {
+  local dir has f
+  for dir in "$APPS_DIR"/*/; do
+    [ -d "$dir" ] || continue
+    has=""
+    for f in backup.sh restore.sh no-backup; do
+      [ -e "$dir/$f" ] && has+=" $f"
+    done
+    has="${has# }"
+    printf '%-20s %s\n' "$(basename "$dir")" "${has:-none}"
+  done
+}
+
+# The runner's crontab entry, tools, last runs and alerts, and each app's last result.
+inv_runner() {
+  echo "crontab: $(crontab -l 2>/dev/null | grep -F '# backup-runner' || echo 'no backup-runner entry')"
+  echo "age $(age --version 2>&1), $(rclone version 2>&1 | head -n 1)"
+  echo
+  echo "Last runs (from $LOG):"
+  grep -E ' (run as|run done)' "$LOG" 2>/dev/null | tail -n 6 || echo "(no log yet)"
+  echo
+  echo "Last alerts:"
+  grep -F 'ALERT:' "$LOG" 2>/dev/null | tail -n 5 || echo "(none in the log)"
+  echo
+  echo "Each app's last result:"
+  local f
+  for f in "$STATE"/*; do
+    [ -f "$f" ] || continue
+    case "$f" in *.last-run | */report-day) continue ;; esac
+    printf '%-20s %s\n' "$(basename "$f")" "$(cat "$f")"
+  done
+}
+
+cmd_inventory() {
+  echo "# VPS inventory, $(date -u +'%Y-%m-%d %H:%M UTC'), as $(whoami)"
+  section "System" inv_system
+  section "Memory" free -h
+  section "Disk" inv_disk
+  section "Containers" docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+  section "Images" docker images --format 'table {{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.CreatedSince}}\t{{.Size}}'
+  section "Volumes and their sizes" inv_volumes
+  section "Docker networks" docker network ls
+  section "Apps and their backup files" inv_apps
+  section "Backup runner" inv_runner
+}
+
 # --- Help and dispatch -----------------------------------------------------------------
 
 help_all() {
@@ -428,6 +524,7 @@ backups: everyday backup jobs, as deploy on the VPS.
   backups scratch-cms remove      and remove it again
   backups media-find <text>       find a CMS upload in the media copy
   backups media-get <bucket>/<path>  download one file from the media copy
+  backups inventory               print the VPS's facts, to paste to an agent
 
 Every command takes --help, for example: backups list --help
 Everything is logged to ~/backup-runner/logs/runner.log, as the hourly runs are.
@@ -438,7 +535,7 @@ command="${1:-}"
 shift || true
 case "$command" in
   "" | -h | --help | help) help_all ;;
-  list | fetch | now | restore | scratch-cms | media-find | media-get)
+  list | fetch | now | restore | scratch-cms | media-find | media-get | inventory)
     # Each command's --help, wherever it is given.
     [[ " $* " == *" --help "* || " $* " == *" -h "* ]] && { "help_$command"; exit 0; }
     "cmd_$command" "$@"

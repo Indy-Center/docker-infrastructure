@@ -275,4 +275,40 @@ test_scratch_cms_loads_a_custom_format_dump_inside_an_archive() {
   assert_eq "$(scratch_sql 'select slug from pages')" "sops"
 }
 
+# Every file on the fake VPS with its size and time, to show a command changed nothing.
+# The fake endpoint's folder and the test's own copy of the output (run.out) are left
+# out: they are not part of the VPS.
+fake_vps_snapshot() {
+  find "$T" -path "$T/endpoint" -prune -o ! -path "$T/run.out" -printf '%p %s %T@\n' | sort
+}
+
+test_inventory_prints_each_fact_under_its_heading_and_changes_nothing() {
+  app_working cms
+  mkdir -p "$T/apps/stateless" "$T/apps/forgotten"
+  touch "$T/apps/stateless/no-backup"
+  run_at 2026-10-20T07:00:00Z
+  # A docker that only says what it was asked, so the test needs no containers.
+  mkdir -p "$T/runner/bin"
+  printf '#!/usr/bin/env bash\necho "fake docker: $*"\n' > "$T/runner/bin/docker"
+  chmod +x "$T/runner/bin/docker"
+
+  local before out
+  before="$(fake_vps_snapshot)"
+  out="$(backups inventory)" || fail "inventory failed: $out" || return 1
+  assert_eq "$(fake_vps_snapshot)" "$before" "the fake VPS after inventory" || return 1
+
+  # Each heading, in this order.
+  assert_eq "$(echo "$out" | grep '^## ' | tr '\n' '|')" \
+    "## System|## Memory|## Disk|## Containers|## Images|## Volumes and their sizes|## Docker networks|## Apps and their backup files|## Backup runner|" \
+    "headings" || return 1
+  echo "$out" | grep -q "fake docker: ps -a" || fail "containers not listed: $out" || return 1
+  echo "$out" | grep -q "fake docker: system df -v" || fail "volume sizes not listed: $out" || return 1
+  echo "$out" | grep -Eq '^cms +backup.sh restore.sh$' || fail "cms's files: $out" || return 1
+  echo "$out" | grep -Eq '^stateless +no-backup$' || fail "stateless's files: $out" || return 1
+  echo "$out" | grep -Eq '^forgotten +none$' || fail "forgotten's files: $out" || return 1
+  # The runner's last run, from its log.
+  echo "$out" | grep -q "run as 2026-10-20T07:00:00Z" || fail "last run not shown: $out" || return 1
+  echo "$out" | grep -Eq '^cms +backed up$' || fail "cms's last result: $out"
+}
+
 run_tests "$@"
