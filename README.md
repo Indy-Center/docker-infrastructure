@@ -16,13 +16,17 @@ This repository holds the machinery shared by every app on the box, and no app. 
 - `examples/app/`: what an app's own repository copies to run behind Traefik: `deploy/docker-compose.yml` (what lands in `~/apps/<app>/`) and `.github/workflows/` (CI and deploy over SSH). GitHub only runs workflows from the repository root, so these never run here.
 - `backup-runner/`: everything deployed to `/home/deploy/backup-runner/`, the backup runner (see [Backups](#backups)).
   - `run-backups.sh`: the runner. Cron starts it every hour.
+  - `lib.sh`: the runner's settings and its steps for backing up one app, shared by `run-backups.sh` and `backups.sh`.
+  - `backups.sh`: the [helper commands](#helper-commands), for people.
   - `schedule.conf`: how often each app is backed up, and how long its frequent copies are kept.
+  - `media.conf`: the CMS's media buckets the media copy copies.
   - `install-tools.sh`: installs pinned, checksum-checked age and rclone into `~/backup-runner/bin/`.
   - `install-cron.sh`: installs the runner's hourly crontab entry for `deploy`.
-- `tests/backup-runner/`: the runner's tests, run in CI against fake apps. Never deployed.
+  - `install-command.sh`: installs the `backups` command for `deploy`.
+- `tests/backup-runner/`: the runner's tests (`test.sh`) and the helper commands' (`helpers-test.sh`), run in CI on a fake VPS (`fake-vps.sh`). Never deployed.
 - `staging/`: a throwaway Traefik against Let's Encrypt staging, used by `staging.yml` to prove certificate issuance. Never deployed.
 - `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up, and runs the backup runner's tests.
-- `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH. Then it writes the runner's secrets (rclone config, age key, Discord webhooks), rsyncs `backup-runner/` to `/home/deploy/backup-runner/`, and installs its tools and crontab entry.
+- `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH. Then it writes the runner's secrets (rclone config, age key, Discord webhooks), rsyncs `backup-runner/` to `/home/deploy/backup-runner/`, and installs its tools, crontab entry and `backups` command.
 
 ## Certificates
 
@@ -157,6 +161,7 @@ Each file is named for the UTC time of its run and the recipe's file, plus `.age
 | `~/backup-runner/bin/` | The pinned `age`, `age-keygen` and `rclone`, installed by the deploy |
 | `~/backup-runner/logs/runner.log` | Everything each run did, and all the recipes' output. At 5 MB it moves to `runner.log.1`, replacing the older one |
 | `~/backup-runner/state/` | Each app's latest result and last run hour, for the schedule and the report. Losing it means every app is backed up at the next run |
+| `~/.local/bin/backups` | The `backups` command: runs `~/backup-runner/backups.sh` |
 
 ```bash
 tail -f ~/backup-runner/logs/runner.log
@@ -176,18 +181,42 @@ The deploy writes each file mode 600, so a rebuilt VPS gets them back from one d
 
 Never rotate the age key by replacing it: backups made with the old key need the old key to restore.
 
-The R2 key can write to `indy-center-backups` and read the CMS media buckets, but cannot create or delete buckets. The rebuilt VPS gets it back from one deploy. To rotate it, make a new R2 token, update both secrets, and run **Build and Deploy** by hand. To use the bucket by hand:
+The R2 key can write to `indy-center-backups` and read the CMS media buckets, but cannot create or delete buckets. The rebuilt VPS gets it back from one deploy. To rotate it, make a new R2 token, update both secrets, and run **Build and Deploy** by hand. The [helper commands](#helper-commands) cover everyday jobs; to use the bucket by hand:
 
 ```bash
 export PATH=~/backup-runner/bin:$PATH RCLONE_CONFIG=~/backup-runner/secrets/rclone.conf
 rclone lsf r2:indy-center-backups/daily/payload/
 ```
 
+### Helper commands
+
+`backups` does each everyday backup job in one command, so nobody has to remember rclone or age. Run it as `deploy` on the VPS (from your own login, `sudo -iu deploy` first). The deploy installs it in `~/.local/bin`, which Ubuntu puts on `PATH` at login; `bash ~/backup-runner/backups.sh` is the same thing. Every command prints what it is about to do, and `backups <command> --help` explains it in full.
+
+| Command | What it does |
+| ------- | ------------ |
+| `backups now <app>` | Backs up one app straight away, before a risky change. Exactly the runner's own steps (recipe, encrypt, upload), into `frequent/` only: it is never copied to `daily/` or `monthly/`, and the app's schedule is unchanged. A failure is shown, not sent to Discord |
+| `backups list <app>` | Lists an app's backups, oldest first, with each one's size and the tiers it is in |
+| `backups fetch <app> <backup> [folder]` | Downloads one backup and decrypts it into a folder (default: the current one), readable only by you. Never overwrites a file |
+| `backups restore <app> <backup>` | Fetches and decrypts a backup, asks you to type the app's name, then runs the app's `restore.sh` with the file, which replaces the app's live data. Stops at a message if the app has no `restore.sh`. The decrypted file is deleted afterwards |
+| `backups scratch-cms <backup>` | Loads a CMS backup into a throwaway Postgres 17 container, `backups-scratch-cms`, beside the live CMS, and prints how to connect: `docker exec` on the VPS, or an SSH tunnel to `127.0.0.1:15432` from your computer. The live CMS is never touched |
+| `backups scratch-cms remove` | Removes that container and its data |
+| `backups media-find <text>` | Finds files in the media copy whose path contains the text, in any case |
+| `backups media-get <bucket>/<path> [folder]` | Downloads one file from the media copy, such as an image deleted from the CMS, and says where to upload it back in Cloudflare's dashboard (the runner's R2 key can only read the CMS's buckets) |
+| `backups inventory` | Prints the VPS's facts under headings, for planning work: system, memory, disk, containers, images, volumes and sizes, networks, each `~/apps` folder's backup files, and the runner's last runs, alerts and results. It only reads. Agents have no access to the VPS, so paste them the whole output |
+
+`<backup>` is a name from `backups list` (`2026-10-20T070000Z-payload.dump.age`), the start of one (`2026-10-20T07`), or `latest`. A start that matches more than one backup lists the matches and stops.
+
+Only `restore` changes a live app, and it asks first. `now` and `restore` write to `runner.log` as the hourly runs do, and take the run lock: they wait for a running hourly run to finish, and an hourly run that starts while they work steps aside until the next hour, which makes up anything missed.
+
+`scratch-cms` finds the database dump in whatever the CMS's recipe wrote: a `pg_dump` custom-format file (loaded with `pg_restore`), plain SQL (loaded with `psql`), either gzipped, or a tar archive holding one of those beside other files. Ownership and grants are left out, since the scratch database has only the `postgres` user.
+
+The runbooks for recovering one app or rebuilding the VPS, being written for tech.flyindycenter.com's Operations section, are built on these commands.
+
 ### Running and testing it
 
-To run it by hand, as `deploy`: `bash ~/backup-runner/run-backups.sh`. It does exactly what the hourly run does, so it backs up only what is due.
+To run it by hand, as `deploy`: `bash ~/backup-runner/run-backups.sh`. It does exactly what the hourly run does, so it backs up only what is due. To back up one app now, use `backups now <app>`.
 
-`bash tests/backup-runner/test.sh` runs the tests (CI does on every pull request). Each one builds a fake VPS in a temp folder, with fake apps, a local folder standing in for R2, a test age key and a fake Discord, runs the runner as a chosen time, and checks what landed where and what was sent. It needs `age`, `age-keygen` and `rclone` on `PATH`: `bash backup-runner/install-tools.sh ~/.local/bin` installs them.
+`bash tests/backup-runner/test.sh` runs the runner's tests, and `bash tests/backup-runner/helpers-test.sh` the helper commands' (CI runs both on every pull request). Each test builds a fake VPS in a temp folder, with fake apps, a local folder standing in for R2, a test age key and a fake Discord. The runner's tests run it as a chosen time and check what landed where and what was sent; the helpers' tests run each command against backups the runner made, and check what it printed, downloaded, decrypted or restored. They need `age`, `age-keygen` and `rclone` on `PATH`: `bash backup-runner/install-tools.sh ~/.local/bin` installs them. The `scratch-cms` tests also need Docker, and pass without running when it is missing.
 
 ## Deployment
 
