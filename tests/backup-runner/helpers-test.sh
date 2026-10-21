@@ -184,4 +184,30 @@ test_restore_that_fails_says_so() {
   assert_eq "$(ls -A "$T/staging")" "" "staging left behind"
 }
 
+test_media_find_and_get_bring_back_a_file_deleted_from_the_cms() {
+  media_bucket payload-media
+  mkdir -p "$T/r2/payload-media/courses"
+  echo "plane" > "$T/r2/payload-media/courses/Plane.png"
+  echo "tower" > "$T/r2/payload-media/tower.png"
+  run_at 2026-10-20T07:00:00Z
+  rm "$T/r2/payload-media/courses/Plane.png"
+
+  local out
+  out="$(backups media-find plane)" || fail "media-find failed: $out" || return 1
+  # Any case matches, and only the matching file is listed.
+  assert_eq "$(echo "$out" | grep -v '^Files')" "payload-media/courses/Plane.png" || return 1
+
+  mkdir "$T/out"
+  out="$(backups media-get payload-media/courses/Plane.png "$T/out")" || fail "media-get failed: $out" || return 1
+  assert_eq "$(cat "$T/out/Plane.png")" "plane" || return 1
+  # It says where the file goes back.
+  echo "$out" | grep -q "payload-media.*courses/Plane.png" || fail "no put-back instructions: $out"
+}
+
+test_media_get_of_a_file_not_in_the_copy_says_so() {
+  local out
+  out="$(backups media-get payload-media/nothing.png "$T")" && fail "media-get should fail: $out" && return 1
+  echo "$out" | grep -q "No file media/payload-media/nothing.png" || fail "unexpected output: $out"
+}
+
 run_tests "$@"

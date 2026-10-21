@@ -232,6 +232,62 @@ cmd_restore() {
   echo "Done: $app is restored from $FOUND_NAME. Check it works."
 }
 
+help_media-find() {
+  cat <<'EOF'
+backups media-find <text>
+
+Searches the media copy (every file ever uploaded to the CMS) for files whose path
+contains <text>, in any case. Prints each as <bucket>/<path>, ready for media-get.
+Changes nothing.
+
+  backups media-find plane
+EOF
+}
+
+cmd_media-find() {
+  local text="${1:-}"
+  need "$text" media-find
+  local found
+  found="$(rclone lsf -R --files-only "$BUCKET/media/" | grep -iF -- "$text")"
+  [ -n "$found" ] || die "No file in the media copy has \"$text\" in its path."
+  echo "Files in the media copy matching \"$text\":"
+  echo "$found"
+}
+
+help_media-get() {
+  cat <<'EOF'
+backups media-get <bucket>/<path> [folder]
+
+Downloads one file from the media copy into a folder (the current one if none is given),
+for example an image deleted from the CMS. <bucket>/<path> is a line from media-find.
+Media files are not encrypted, so it is ready to use.
+
+It changes nothing: the runner's R2 key can only read the CMS's buckets. It prints where
+the file belongs, to upload it back in Cloudflare's dashboard.
+
+  backups media-get payload-media/plane.png
+EOF
+}
+
+cmd_media-get() {
+  local path="${1:-}" folder="${2:-.}"
+  need "$path" media-get
+  local name="${path##*/}" bucket="${path%%/*}" key="${path#*/}"
+  [ -d "$folder" ] || die "No folder $folder to download into."
+  [ ! -e "$folder/$name" ] || die "$folder/$name already exists; move it or download into another folder."
+  # lsf of one file lists it only if it exists.
+  [ -n "$(rclone lsf "$BUCKET/media/$path" 2>/dev/null)" ] \
+    || die "No file media/$path in the media copy. backups media-find <part of its name> finds it."
+  echo "Downloading media/$path to $folder/$name"
+  rclone copyto "$BUCKET/media/$path" "$folder/$name" || die "Download failed."
+  echo "Done: $folder/$name"
+  # The folder inside the bucket it goes back into, if any.
+  local where="the bucket's top level"
+  [ "$key" != "$name" ] && where="the folder ${key%/*}/"
+  echo "To put it back in the CMS: Cloudflare dashboard → R2 → $bucket, open $where,"
+  echo "and upload it there as $name, so the CMS finds it at $key again."
+}
+
 # --- Help and dispatch -----------------------------------------------------------------
 
 help_all() {
@@ -242,6 +298,8 @@ backups: everyday backup jobs, as deploy on the VPS.
   backups list <app>              list an app's backups, oldest first
   backups fetch <app> <backup>    download and decrypt one, to look inside it
   backups restore <app> <backup>  put an app's data back from a backup (asks first)
+  backups media-find <text>       find a CMS upload in the media copy
+  backups media-get <bucket>/<path>  download one file from the media copy
 
 Every command takes --help, for example: backups list --help
 Everything is logged to ~/backup-runner/logs/runner.log, as the hourly runs are.
@@ -252,7 +310,7 @@ command="${1:-}"
 shift || true
 case "$command" in
   "" | -h | --help | help) help_all ;;
-  list | fetch | now | restore)
+  list | fetch | now | restore | media-find | media-get)
     # Each command's --help, wherever it is given.
     [[ " $* " == *" --help "* || " $* " == *" -h "* ]] && { "help_$command"; exit 0; }
     "cmd_$command" "$@"
