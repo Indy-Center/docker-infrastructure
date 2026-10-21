@@ -66,6 +66,20 @@ jobs:
       - name: Runner tests
         run: bash tests/backup-runner/test.sh
 
+      # The helper commands (backups.sh), on the same fake VPS. The scratch CMS tests use
+      # the runner's Docker and a real Postgres 17.
+      - name: Helper command tests
+        run: bash tests/backup-runner/helpers-test.sh
+
+      - name: The backups command installs and runs
+        run: |
+          # Where the deploy puts backups.sh on the VPS.
+          mkdir -p ~/backup-runner
+          cp backup-runner/*.sh ~/backup-runner/
+          bash backup-runner/install-command.sh
+          bash backup-runner/install-command.sh
+          ~/.local/bin/backups --help | grep -q '^backups: everyday backup jobs'
+
       - name: Crontab entry installs once, however often the deploy runs
         run: |
           bash backup-runner/install-cron.sh
