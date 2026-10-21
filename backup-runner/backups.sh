@@ -23,18 +23,20 @@ die() { echo "$*" >&2; exit 1; }
 # tech-team-alerts (lib.sh's alert, which back_up uses).
 alert() { log "not sent to Discord, as a person ran this: $1"; }
 
-# For the commands that back up or restore: from here on, everything printed also goes
-# to the runner's log, and the command waits for any hourly run to finish first (the run
-# lock), so the two never work on an app at once.
-log_and_lock() {
-  rotate_log
-  exec > >(tee -a "$LOG") 2>&1
-  log "backups $*, run by hand"
+# For the commands that back up or restore, right before they do: waits for any hourly
+# run to finish (the run lock), so the two never work on an app at once, then sends
+# everything printed from here on to the runner's log as well. Take it as late as
+# possible: while it is held, the hourly runs step aside.
+lock_and_log() {
   open_lock
   if ! flock -n 9; then
     echo "The hourly run is going; waiting for it to finish (Ctrl-C to give up)…"
     flock 9
   fi
+  # Only once the lock is held, so the runner is not rotating the log at the same time.
+  rotate_log
+  exec > >(tee -a "$LOG") 2>&1
+  log "backups $*, run by hand"
 }
 
 # --- Finding backups -------------------------------------------------------------------
@@ -177,7 +179,7 @@ cmd_now() {
   need "$app" now
   [ -d "$APPS_DIR/$app" ] || die "No app $app: there is no folder $APPS_DIR/$app."
   [ -f "$APPS_DIR/$app/backup.sh" ] || die "$app has no backup.sh in $APPS_DIR/$app, so it can't be backed up."
-  log_and_lock now "$app"
+  lock_and_log now "$app"
   echo "Backing up $app into frequent/ with its backup.sh…"
   ONLY_FREQUENT=yes back_up "$app" || die "The backup of $app failed (above)."
   echo "Done: frequent/$app/ in $BUCKET. backups list $app shows it."
@@ -207,7 +209,6 @@ cmd_restore() {
   [ -d "$dir" ] || die "No app $app: there is no folder $dir."
   # The app contract (decision 0005): without restore.sh there is no standard way back.
   [ -f "$dir/restore.sh" ] || die "$app has no restore.sh in $dir, so it can't be restored with this command. Its backups can still be fetched (backups fetch $app $want); putting the data back is then up to the app's own README."
-  log_and_lock restore "$app" "$want"
 
   # The decrypted backup waits in its own staging folder, removed however this ends.
   local stage="$STAGING_DIR/restore-$app"
@@ -219,8 +220,14 @@ cmd_restore() {
   echo
   echo "This runs $dir/restore.sh with $FOUND_NAME."
   echo "It replaces $app's live data with the data from that backup."
-  read -r -p "Type the app's name ($app) to go ahead, anything else to stop: " answer || true
+  printf "Type the app's name (%s) to go ahead, anything else to stop: " "$app"
+  local answer=""
+  read -r answer || true
   [ "$answer" = "$app" ] || die "Stopped; nothing was changed."
+
+  # Only now, with the answer given, wait for the run lock: a restore left at the
+  # question above never holds up the hourly runs.
+  lock_and_log restore "$app" "$FOUND_NAME"
 
   # Run as the runner runs a recipe: with bash, from the app's folder, with the lock kept
   # out of anything it starts.

@@ -206,7 +206,7 @@ rclone lsf r2:indy-center-backups/daily/payload/
 
 `<backup>` is a name from `backups list` (`2026-10-20T070000Z-payload.tar.age`), the start of one (`2026-10-20T07`), or `latest`. A start that matches more than one backup lists the matches and stops.
 
-Only `restore` changes a live app, and it asks first. `now` and `restore` write to `runner.log` as the hourly runs do, and take the run lock: they wait for a running hourly run to finish, and an hourly run that starts while they work steps aside until the next hour, which makes up anything missed.
+Only `restore` changes a live app, and it asks first. `now` and `restore` take the run lock just before they back up or restore (`restore` only once you have confirmed), and from then on write to `runner.log` as the hourly runs do. They wait for a running hourly run to finish, and an hourly run that starts while they work steps aside until the next hour, which makes up anything missed.
 
 `scratch-cms` finds the database dump in whatever the CMS's recipe wrote. payload's recipe writes `payload.tar`, holding `payload.dump` and `row-counts.tsv`, so it unpacks that and loads `payload.dump`. It also takes a `pg_dump` custom-format file (loaded with `pg_restore`), plain SQL (loaded with `psql`), either gzipped, or a tar archive holding one of those beside other files. Ownership and grants are left out, since the scratch database has only the `postgres` user.
 

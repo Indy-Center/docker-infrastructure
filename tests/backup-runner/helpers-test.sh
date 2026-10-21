@@ -180,6 +180,29 @@ test_restore_asks_first_and_stops_on_any_other_answer() {
   assert_eq "$(ls -A "$T/staging")" "" "staging left behind"
 }
 
+test_restore_waiting_at_its_question_does_not_hold_up_the_hourly_run() {
+  app_restorable cms
+  run_at 2026-10-20T07:00:00Z
+  # A restore left at its question: its input is a pipe nobody has written to yet.
+  mkfifo "$T/answer"
+  env $(fake_vps_env) bash "$repo/backup-runner/backups.sh" restore cms latest \
+    < "$T/answer" > "$T/restore.out" 2>&1 &
+  local pid=$!
+  exec 7> "$T/answer"
+  local i
+  for i in $(seq 100); do grep -q "Type the app's name" "$T/restore.out" && break; sleep 0.1; done
+  grep -q "Type the app's name" "$T/restore.out" || fail "restore never asked: $(cat "$T/restore.out")" || return 1
+
+  run_at 2026-10-21T07:00:00Z
+  echo cms >&7
+  exec 7>&-
+  wait "$pid" || fail "restore failed: $(cat "$T/restore.out")" || return 1
+  assert_count daily/cms 2 || return 1
+  grep -q "skipped: the previous run is still running" "$T/runner/logs/runner.log" \
+    && fail "the hourly run stepped aside for a restore that was only asking" && return 1
+  assert_eq "$(cat "$T/restore-got")" "data of cms"
+}
+
 test_restore_stops_at_an_app_with_no_restore_script() {
   app_working cms
   rm "$T/apps/cms/restore.sh"
