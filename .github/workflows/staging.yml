@@ -5,7 +5,14 @@ name: Staging certificate check
 # lives in ~/traefik-staging/ with a loopback-only port, and asks Let's Encrypt staging for the wildcard.
 on:
   workflow_dispatch:
+    inputs:
+      server:
+        description: Server to check, by its settings prefix in capitals, as in build-and-deploy.yml's server list
+        type: string
+        required: true
+        default: VANDERBILT
 
+# One at a time across servers: each run creates the same DNS-01 TXT record.
 concurrency:
   group: staging
   cancel-in-progress: false
@@ -15,25 +22,35 @@ permissions:
 
 jobs:
   staging:
+    name: Staging check on ${{ inputs.server }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up SSH
         env:
-          VANDERBILT_HOST: ${{ vars.VANDERBILT_HOST }}
-          VANDERBILT_DEPLOY_USER: ${{ vars.VANDERBILT_DEPLOY_USER }}
-          VANDERBILT_DEPLOY_SSH_KEY: ${{ secrets.VANDERBILT_DEPLOY_SSH_KEY }}
-          VANDERBILT_KNOWN_HOSTS: ${{ secrets.VANDERBILT_KNOWN_HOSTS }}
+          SERVER: ${{ inputs.server }}
+          HOST: ${{ vars[format('{0}_HOST', inputs.server)] }}
+          DEPLOY_USER: ${{ vars[format('{0}_DEPLOY_USER', inputs.server)] }}
+          DEPLOY_SSH_KEY: ${{ secrets[format('{0}_DEPLOY_SSH_KEY', inputs.server)] }}
+          KNOWN_HOSTS: ${{ secrets[format('{0}_KNOWN_HOSTS', inputs.server)] }}
         run: |
+          missing=""
+          for name in HOST DEPLOY_USER DEPLOY_SSH_KEY KNOWN_HOSTS; do
+            [ -n "${!name}" ] || missing+=" ${SERVER}_$name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Not set for $SERVER:$missing. See the README's settings table"
+            exit 1
+          fi
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$VANDERBILT_DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "$VANDERBILT_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           cat > ~/.ssh/config <<EOF
           Host vps
-            HostName $VANDERBILT_HOST
-            User $VANDERBILT_DEPLOY_USER
+            HostName $HOST
+            User $DEPLOY_USER
             IdentityFile ~/.ssh/deploy_key
             IdentitiesOnly yes
             StrictHostKeyChecking yes
