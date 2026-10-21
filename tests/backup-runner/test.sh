@@ -353,7 +353,7 @@ test_restore_check_runs_on_sunday_at_the_nightly_hour_and_is_in_that_days_report
     || fail "Sunday's backup was not checked" || return 1
   messages report | grep -Eq '^restore check +passed 2026-10-25 07:00$' || fail "Sunday's report: $(messages report)" || return 1
   assert_eq "$(message_count alerts)" 0 "alerts" || return 1
-  ! check_container_exists || fail "the container is still there"
+  ! restore_check_container_exists || fail "the container is still there"
 }
 
 test_failed_restore_check_alerts_naming_the_step_and_the_report_says_failed() {
@@ -388,7 +388,7 @@ test_restore_check_that_times_out_says_so() {
   mkdir -p "$T/runner/bin"
   cat > "$T/runner/bin/timeout" <<EOF
 #!/usr/bin/env bash
-[[ "\$2 \$3" == "bash "*/backups.sh ]] && exit 124
+for arg; do [[ "\$arg" == */backups.sh ]] && exit 124; done
 exec "$real" "\$@"
 EOF
   chmod +x "$T/runner/bin/timeout"

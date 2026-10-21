@@ -62,12 +62,20 @@ app_failing() {
 #   have_docker || return 0
 
 # Test containers have their own names, so they never meet real ones on the same machine.
+# The dump maker's name is this test file's own, so test.sh and helpers-test.sh can run
+# at the same time.
 export BACKUP_RESTORE_CHECK_CONTAINER=backups-restore-check-test
-DUMP_MAKER=backups-test-dump-maker
+DUMP_MAKER="backups-test-dump-maker-$$"
 
-# Whether Docker is usable here; the tests that need it pass trivially without it.
+# Whether Docker is usable here. Without it the tests that need it pass trivially, except
+# in CI (GitHub sets CI=true), where they must run: there, no Docker fails the test (each
+# test runs in its own subshell, so exit ends only the test).
 have_docker() {
   docker info > /dev/null 2>&1 && return 0
+  if [ "${CI:-}" = true ]; then
+    echo "    no Docker, and in CI this test must run"
+    exit 1
+  fi
   echo "    skipped: no Docker"
   return 1
 }
@@ -86,7 +94,11 @@ cms_backing_up() {
 # must leave ownership out.
 make_cms_dump() {
   docker run -d --name "$DUMP_MAKER" -e POSTGRES_PASSWORD=x -e POSTGRES_DB=payload postgres:17 > /dev/null
-  until docker exec "$DUMP_MAKER" pg_isready -h 127.0.0.1 -U postgres -q; do sleep 1; done
+  local tries=0
+  until docker exec "$DUMP_MAKER" pg_isready -h 127.0.0.1 -U postgres -q; do
+    (( ++tries < 60 )) || fail "the dump maker's Postgres did not start within a minute" || return 1
+    sleep 1
+  done
   docker exec "$DUMP_MAKER" psql -q -U postgres -d payload -c "CREATE ROLE payload; CREATE TABLE pages (slug text); INSERT INTO pages VALUES ('sops'); ALTER TABLE pages OWNER TO payload;"
   docker exec "$DUMP_MAKER" pg_dump -U postgres -Fc payload > "$1"
   docker rm -f -v "$DUMP_MAKER" > /dev/null
@@ -98,13 +110,15 @@ make_cms_dump() {
 cms_backup_with_counts() {
   mkdir "$T/pack"
   make_cms_dump "$T/pack/payload.dump"
+  # The counts are a format string on purpose, so a test can write \t and \n.
+  # shellcheck disable=SC2059
   printf "$1" > "$T/pack/row-counts.tsv"
   tar -cf "$T/payload.tar" -C "$T/pack" payload.dump row-counts.tsv
   cms_backing_up "$T/payload.tar"
 }
 
 # Whether the restore check's container exists, running or not.
-check_container_exists() { [ -n "$(docker ps -aq -f name="^$BACKUP_RESTORE_CHECK_CONTAINER\$")" ]; }
+restore_check_container_exists() { [ -n "$(docker ps -aq -f name="^$BACKUP_RESTORE_CHECK_CONTAINER\$")" ]; }
 
 # Removes the restore check's containers when a test ends, however it ends.
 remove_check_on_exit() {

@@ -463,9 +463,13 @@ check_row_counts() {
     else
       # Quoted as an identifier: any " in the name is doubled.
       got="$(docker exec "$container" psql -U postgres -d payload -tAc \
-        "SELECT count(*) FROM public.\"${table//\"/\"\"}\"" < /dev/null)" \
-        || { problems+="couldn't count the rows of $table"$'\n'; continue; }
-      (( got >= want )) || problems+="table $table has $got rows; the backup counted $want"$'\n'
+        "SELECT count(*) FROM public.\"${table//\"/\"\"}\"" < /dev/null)"
+      if [[ ! "$got" =~ ^[0-9]+$ ]]; then
+        problems+="couldn't count the rows of $table"$'\n'
+      # 10# reads both as decimal, even with a leading zero.
+      elif (( 10#$got < 10#$want )); then
+        problems+="table $table holds only $got of the $want rows the backup counted"$'\n'
+      fi
     fi
   done < "$counts"
   (( checked > 0 )) || problems+="row-counts.tsv lists no tables"$'\n'
@@ -475,6 +479,10 @@ check_row_counts() {
 }
 
 cmd_restore-check() {
+  # Run by hand, it first waits for any hourly run, whose Sunday check uses the same
+  # container. The runner sets BACKUP_RUN_LOCK_HELD, as it already holds the lock.
+  [ "${BACKUP_RUN_LOCK_HELD:-}" = yes ] || lock_and_log restore-check
+
   # 1. The newest backup, decrypted into its own staging folder, removed however this ends.
   STEP="download and decrypt"
   new_stage restore-check
@@ -486,7 +494,8 @@ cmd_restore-check() {
   counts="$(dirname "$dump")/row-counts.tsv"
   [ -f "$counts" ] || die "$FOUND_NAME has no row-counts.tsv beside its dump, so there is nothing to check it against."
 
-  # 2. A throwaway Postgres 17, on no port, removed with its data however this ends.
+  # 2. A throwaway Postgres 17, on no port, removed with its data however this ends. One
+  #    left by a check that was killed outright is removed first.
   STEP="start Postgres"
   echo "Starting a throwaway Postgres 17, $RESTORE_CHECK_CONTAINER…"
   docker rm -f -v "$RESTORE_CHECK_CONTAINER" > /dev/null 2>&1

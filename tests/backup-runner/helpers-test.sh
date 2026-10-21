@@ -458,7 +458,7 @@ test_restore_check_passes_on_a_good_backup_and_removes_its_container() {
   out="$(backups restore-check)" || fail "restore-check failed: $out" || return 1
   echo "$out" | grep -q "passed" || fail "unexpected output: $out" || return 1
   echo "$out" | grep -q "2026-10-20T070000Z-payload.tar.age" || fail "does not name the backup: $out" || return 1
-  ! check_container_exists || fail "the container is still there" || return 1
+  ! restore_check_container_exists || fail "the container is still there" || return 1
   assert_eq "$(ls -A "$T/staging")" "" "decrypted backup left behind"
 }
 
@@ -468,7 +468,7 @@ check_fails_with() {
   local out
   out="$(backups restore-check)" && fail "restore-check should fail: $out" && return 1
   echo "$out" | grep -qF -- "$1" || fail "expected \"$1\" in: $out" || return 1
-  ! check_container_exists || fail "the container is still there" || return 1
+  ! restore_check_container_exists || fail "the container is still there" || return 1
   assert_eq "$(ls -A "$T/staging" 2>/dev/null)" "" "decrypted backup left behind"
 }
 
@@ -485,7 +485,7 @@ test_restore_check_fails_when_a_table_has_fewer_rows_than_counted() {
   remove_check_on_exit
   cms_backup_with_counts 'pages\t5\n'
   run_at 2026-10-20T07:00:00Z
-  check_fails_with "Failed at check tables: table pages has 1 rows; the backup counted 5"
+  check_fails_with "Failed at check tables: table pages holds only 1 of the 5 rows the backup counted"
 }
 
 test_restore_check_fails_on_a_corrupt_dump() {
@@ -505,6 +505,18 @@ test_restore_check_fails_on_a_corrupt_backup_file() {
   run_at 2026-10-20T07:00:00Z
   echo "not an age file" > "$T/r2/indy-center-backups/daily/payload/2026-10-20T070000Z-payload.txt.age"
   check_fails_with "Failed at download and decrypt: Decrypting failed"
+}
+
+test_restore_check_run_by_hand_waits_for_the_hourly_run() {
+  app_working payload
+  run_at 2026-10-20T07:00:00Z
+  # An hourly run holds the lock for a moment; its own Sunday check uses the same container.
+  flock "$T/runner/logs/run.lock" sleep 2 &
+  sleep 0.5
+  local out
+  out="$(backups restore-check)"
+  wait
+  echo "$out" | grep -q "waiting for it to finish" || fail "it did not wait: $out"
 }
 
 test_restore_check_fails_with_no_backup() {

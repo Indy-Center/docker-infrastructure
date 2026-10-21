@@ -110,30 +110,30 @@ RESTORE_CHECK_DAY=7
 # Like a recipe's time limit (lib.sh). Loading today's CMS takes well under a minute.
 RESTORE_CHECK_TIMEOUT=30m
 
+# Whether this box runs the CMS, so has a CMS backup to check.
+has_cms() { [ -f "$APPS_DIR/$CMS_APP/backup.sh" ]; }
+
 # Whether the check is due: on Sunday at the nightly hour, or a week after the last check
-# if a Sunday was missed. A runner's first run counts as its last check, so a new box
-# waits for Sunday rather than checking a backup it has only just taken.
+# if a Sunday was missed.
 restore_check_due() {
-  [ -f "$APPS_DIR/$CMS_APP/backup.sh" ] || return 1
   local last
-  if ! last="$(cat "$STATE/restore-check.last-run" 2>/dev/null)"; then
-    last="$RUN_HOUR"
-    echo "$last" > "$STATE/restore-check.last-run"
-  fi
+  last="$(cat "$STATE/restore-check.last-run")"
   (( HOUR == NIGHTLY_HOUR && $(date -u -d "$NOW" +%u) == RESTORE_CHECK_DAY )) && return 0
   (( RUN_HOUR - last >= 7 * 24 ))
 }
 
 # Runs the check, keeps its result for the report, and alerts if it fails. The check
 # removes its container however it ends, a timeout included: timeout stops it with TERM,
-# which it traps. Should even that fail, the next check removes the old container first.
+# which it traps, and KILLs it a minute later if it is still going. A container left by
+# that is removed by the next check before it starts its own.
 run_restore_check() {
   local out="$STAGING_DIR/restore-check.log" status when
   when="$(date -u -d "$NOW" '+%Y-%m-%d %H:%M')"
   log "restore check of the newest $CMS_APP backup"
   mkdir -p "$STAGING_DIR"
-  timeout "$RESTORE_CHECK_TIMEOUT" bash "$RUNNER_DIR/backups.sh" restore-check \
-    > "$out" 2>&1 9>&- < /dev/null
+  # This run holds the run lock, so the check must not wait for it.
+  BACKUP_RUN_LOCK_HELD=yes timeout -k 1m "$RESTORE_CHECK_TIMEOUT" \
+    bash "$RUNNER_DIR/backups.sh" restore-check > "$out" 2>&1 9>&- < /dev/null
   status=$?
   cat "$out"
   if [ "$status" = 0 ]; then
@@ -141,11 +141,13 @@ run_restore_check() {
   else
     echo "failed $when" > "$STATE/restore-check"
     local detail
-    # timeout exits 124 when it stops the check.
-    if [ "$status" = 124 ]; then
+    # timeout exits 124 when it stops the check, 137 when it has to kill it.
+    if [ "$status" = 124 ] || [ "$status" = 137 ]; then
       detail="still running after $RESTORE_CHECK_TIMEOUT, so it was stopped"
     else
-      detail="$(tail -n 10 "$out")"
+      # From the line naming the step that failed (backups.sh's die), or the last lines.
+      detail="$(sed -n '/^Failed at /,$p' "$out" | head -n 15)"
+      [ -n "$detail" ] || detail="$(tail -n 10 "$out")"
     fi
     alert "Weekly restore check of the newest CMS backup failed, so it may not restore. \`backups restore-check\` runs it again.
 \`\`\`
@@ -225,7 +227,7 @@ send_report() {
   done
   # The last weekly restore check, on a box that runs the CMS.
   local check=""
-  if [ -f "$APPS_DIR/$CMS_APP/backup.sh" ]; then
+  if has_cms; then
     check="$(printf '%-28s %s' "restore check" "$(cat "$STATE/restore-check" 2>/dev/null || echo "not run yet")")"$'\n'
   fi
   post_discord report-webhook.url "**Backups for $DAY** (times UTC)
@@ -290,10 +292,15 @@ if (( HOUR == NIGHTLY_HOUR || RUN_HOUR - last_media_copy > 24 )); then
   done
 fi
 
-# Weekly, after the backups and before the report, so that day's report shows it.
-if restore_check_due; then
-  echo "$RUN_HOUR" > "$STATE/restore-check.last-run"
-  run_restore_check
+# Weekly, after the backups and before the report, so that day's report shows it. A
+# runner's first run counts as its last check, so a new box waits for Sunday rather than
+# checking a backup it has only just taken.
+if has_cms; then
+  [ -f "$STATE/restore-check.last-run" ] || echo "$RUN_HOUR" > "$STATE/restore-check.last-run"
+  if restore_check_due; then
+    echo "$RUN_HOUR" > "$STATE/restore-check.last-run"
+    run_restore_check
+  fi
 fi
 
 # Once a day, after the nightly backups: the report, then the status page's ping. If the
