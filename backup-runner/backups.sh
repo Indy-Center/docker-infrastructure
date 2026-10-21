@@ -13,18 +13,23 @@ set -uo pipefail
 # made exactly the way a scheduled one is.
 source "$(dirname "$0")/lib.sh"
 
-# Prints a message to stderr and stops.
-die() { echo "$*" >&2; exit 1; }
+# Prints a message to stderr and stops. A command made of steps sets STEP first, and the
+# message then names the step that failed.
+STEP=""
+die() { echo "${STEP:+Failed at $STEP: }$*" >&2; exit 1; }
 
 # --- Cleaning up -----------------------------------------------------------------------
 # Decrypted backups and recipe output hold members' data, so whatever a command puts in
-# staging or a temp folder is removed when it ends, however it ends: done, failed,
-# Ctrl-C, killed, or its SSH session dropped (a hang-up).
+# staging or a temp folder, or loads into a throwaway container, is removed when it ends,
+# however it ends: done, failed, Ctrl-C, killed, or its SSH session dropped (a hang-up).
 
-CLEANUP=()
+CLEANUP=() CONTAINERS=()
 # Marks paths to remove when this command ends.
 remove_on_exit() { CLEANUP+=("$@"); }
-trap 'rm -rf "${CLEANUP[@]}"' EXIT
+# Marks a container to remove, with its data, when this command ends.
+remove_container_on_exit() { CONTAINERS+=("$1"); }
+trap 'rm -rf "${CLEANUP[@]}"
+  [ "${#CONTAINERS[@]}" = 0 ] || docker rm -f -v "${CONTAINERS[@]}" > /dev/null 2>&1' EXIT
 # Each of these signals ends the command through the EXIT trap above.
 trap 'exit 129' HUP
 trap 'exit 130' INT
@@ -317,6 +322,35 @@ find_dump() {
   return 1
 }
 
+# A new random password for a throwaway database.
+new_password() { tr -dc a-z0-9 < /dev/urandom | head -c 20; }
+
+# Starts a throwaway Postgres 17 (the CMS's version) with an empty database "payload",
+# and waits until it answers. Any further arguments are docker run options, such as a
+# published port. Returns 1 if docker run fails, 2 if it does not answer within a minute.
+#   start_postgres <container> <password> [docker run options…]
+start_postgres() {
+  local name="$1" password="$2"
+  shift 2
+  docker run -d --name "$name" -e POSTGRES_PASSWORD="$password" -e POSTGRES_DB=payload \
+    "$@" postgres:17 > /dev/null || return 1
+  # Ready once it answers over TCP: while it sets itself up it listens on a socket only.
+  local tries=0
+  until docker exec "$name" pg_isready -h 127.0.0.1 -U postgres -q; do
+    (( ++tries < 60 )) || return 2
+    sleep 1
+  done
+}
+
+# Loads a dump into a throwaway Postgres's "payload" database with pg_restore, over
+# stdin, so nothing needs copying into the container. Ownership and grants are left out:
+# the dump's tables belong to the live CMS's "payload" role, and the throwaway database
+# has only the postgres user. Returns pg_restore's exit status.
+#   load_dump <container> <dump>
+load_dump() {
+  docker exec -i "$1" pg_restore -U postgres -d payload --no-owner --no-privileges < "$2"
+}
+
 help_scratch-cms() {
   cat <<'EOF'
 backups scratch-cms <backup>
@@ -357,26 +391,18 @@ cmd_scratch-cms() {
 
   # 2. A throwaway Postgres 17 with a new random password, on loopback only. -v on
   #    removal deletes its data volume too.
-  local password
-  password="$(tr -dc a-z0-9 < /dev/urandom | head -c 20)"
+  local password status
+  password="$(new_password)"
   echo "Starting a throwaway Postgres 17, $SCRATCH_CONTAINER…"
-  docker run -d --name "$SCRATCH_CONTAINER" \
-    -e POSTGRES_PASSWORD="$password" -e POSTGRES_DB=payload \
-    -p "127.0.0.1:$SCRATCH_PORT:5432" postgres:17 > /dev/null \
-    || die "docker run failed."
-  # Ready once it answers over TCP: while it sets itself up it listens on a socket only.
-  local tries=0
-  until docker exec "$SCRATCH_CONTAINER" pg_isready -h 127.0.0.1 -U postgres -q; do
-    (( ++tries < 60 )) || die "Postgres did not start within a minute: docker logs $SCRATCH_CONTAINER shows why. Remove it with: backups scratch-cms remove"
-    sleep 1
-  done
+  start_postgres "$SCRATCH_CONTAINER" "$password" -p "127.0.0.1:$SCRATCH_PORT:5432"
+  status=$?
+  [ "$status" = 1 ] && die "docker run failed."
+  [ "$status" = 2 ] && die "Postgres did not start within a minute: docker logs $SCRATCH_CONTAINER shows why. Remove it with: backups scratch-cms remove"
 
-  # 3. Load the dump with pg_restore, over stdin, so nothing needs copying into the
-  #    container. Ownership and grants are left out: the dump's tables belong to the
-  #    live CMS's "payload" role, and the scratch database has only the postgres user.
+  # 3. Load the dump.
   echo "Loading $FOUND_NAME…"
-  docker exec -i "$SCRATCH_CONTAINER" pg_restore -U postgres -d payload --no-owner --no-privileges < "$dump"
-  local status=$?
+  load_dump "$SCRATCH_CONTAINER" "$dump"
+  status=$?
   rm -rf "$STAGE"
   [ "$status" = 0 ] || die "Loading failed: pg_restore exited $status (its errors are above), so the scratch database is incomplete or empty. It is still there to look at:
   docker exec -it $SCRATCH_CONTAINER psql -U postgres payload
@@ -395,6 +421,94 @@ From your computer, tunnel in (with your usual SSH login), then connect any Post
 
 When you are done: backups scratch-cms remove
 EOF
+}
+
+# --- The restore check -----------------------------------------------------------------
+# Proves the newest CMS backup is usable: it loads into a throwaway Postgres 17, and holds
+# at least the rows payload's recipe counted when it took the backup. The hourly runner
+# runs it weekly and alerts if it fails; a person can run it any time.
+
+RESTORE_CHECK_CONTAINER="${BACKUP_RESTORE_CHECK_CONTAINER:-backups-restore-check}"
+
+help_restore-check() {
+  cat <<'EOF'
+backups restore-check
+
+Checks that the newest CMS (payload) backup can be restored. It downloads and decrypts it,
+loads it into a throwaway Postgres 17 container, and checks that every table the backup's
+row-counts.tsv lists is there with at least the rows counted when the backup was taken.
+The container is removed afterwards, pass or fail. The live CMS is never touched.
+
+The hourly runner does this every Sunday and alerts in tech-team-alerts if it fails.
+A failure here says which step failed.
+
+  backups restore-check
+EOF
+}
+
+# Compares each line of a backup's row counts ("table<TAB>rows", each table in public)
+# with the loaded database. Prints one line per problem, and returns non-zero if any.
+#   check_row_counts <container> <row-counts.tsv>
+check_row_counts() {
+  local container="$1" counts="$2" tables table want got problems="" checked=0
+  tables="$(docker exec "$container" psql -U postgres -d payload -tAc \
+    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'" < /dev/null)" \
+    || { echo "couldn't list the loaded database's tables"; return 1; }
+  while IFS=$'\t' read -r table want _; do
+    [ -n "$table" ] || continue
+    checked=$((checked + 1))
+    if [[ ! "$want" =~ ^[0-9]+$ ]]; then
+      problems+="row-counts.tsv's line for $table has no row count: \"$want\""$'\n'
+    elif ! grep -qxF -- "$table" <<< "$tables"; then
+      problems+="table $table is missing"$'\n'
+    else
+      # Quoted as an identifier: any " in the name is doubled.
+      got="$(docker exec "$container" psql -U postgres -d payload -tAc \
+        "SELECT count(*) FROM public.\"${table//\"/\"\"}\"" < /dev/null)" \
+        || { problems+="couldn't count the rows of $table"$'\n'; continue; }
+      (( got >= want )) || problems+="table $table has $got rows; the backup counted $want"$'\n'
+    fi
+  done < "$counts"
+  (( checked > 0 )) || problems+="row-counts.tsv lists no tables"$'\n'
+  [ -z "$problems" ] && return 0
+  printf '%s' "$problems"
+  return 1
+}
+
+cmd_restore-check() {
+  # 1. The newest backup, decrypted into its own staging folder, removed however this ends.
+  STEP="download and decrypt"
+  new_stage restore-check
+  fetch_into "$CMS_APP" latest "$STAGE"
+
+  STEP="unpack"
+  local dump counts
+  dump="$(find_dump "$FETCHED")" || die "see above."
+  counts="$(dirname "$dump")/row-counts.tsv"
+  [ -f "$counts" ] || die "$FOUND_NAME has no row-counts.tsv beside its dump, so there is nothing to check it against."
+
+  # 2. A throwaway Postgres 17, on no port, removed with its data however this ends.
+  STEP="start Postgres"
+  echo "Starting a throwaway Postgres 17, $RESTORE_CHECK_CONTAINER…"
+  docker rm -f -v "$RESTORE_CHECK_CONTAINER" > /dev/null 2>&1
+  remove_container_on_exit "$RESTORE_CHECK_CONTAINER"
+  start_postgres "$RESTORE_CHECK_CONTAINER" "$(new_password)" \
+    || die "Postgres did not start: docker run failed, or it did not answer within a minute."
+
+  # 3. Load it.
+  STEP="load"
+  echo "Loading $FOUND_NAME…"
+  load_dump "$RESTORE_CHECK_CONTAINER" "$dump"
+  local status=$?
+  [ "$status" = 0 ] || die "pg_restore exited $status (its errors are above)."
+
+  # 4. Every table there, with at least the rows counted at backup time.
+  STEP="check tables"
+  local problems
+  problems="$(check_row_counts "$RESTORE_CHECK_CONTAINER" "$counts")" || die "$problems"
+
+  STEP=""
+  echo "Restore check passed: $FOUND_NAME loads, and every table in its row-counts.tsv holds at least the rows counted at backup time."
 }
 
 help_media-find() {
@@ -575,6 +689,7 @@ backups: everyday backup jobs, run as deploy on the VPS.
   backups restore <app> <backup>     put an app's data back from a backup (asks first)
   backups scratch-cms <backup>       load a CMS backup into a throwaway database
   backups scratch-cms remove         and remove it again
+  backups restore-check              check the newest CMS backup loads (weekly by itself)
   backups media-find <text>          find a CMS upload in the media copy
   backups media-get <bucket>/<path>  download one file from the media copy
   backups inventory                  print the VPS's facts, to paste to an agent
@@ -589,7 +704,7 @@ command="${1:-}"
 shift || true
 case "$command" in
   "" | -h | --help | help) help_all ;;
-  list | fetch | now | restore | scratch-cms | media-find | media-get | inventory)
+  list | fetch | now | restore | scratch-cms | restore-check | media-find | media-get | inventory)
     # Each command's --help, wherever it is given.
     [[ " $* " == *" --help "* || " $* " == *" -h "* ]] && { "help_$command"; exit 0; }
     "cmd_$command" "$@"

@@ -57,7 +57,7 @@ EOF
 test_every_command_has_help_and_runs_nothing_for_it() {
   local cmd out out_cmd
   out="$(backups --help)" || fail "backups --help failed" || return 1
-  for cmd in now list fetch restore scratch-cms media-find media-get inventory; do
+  for cmd in now list fetch restore scratch-cms restore-check media-find media-get inventory; do
     echo "$out" | grep -q "backups $cmd" || fail "backups --help leaves out $cmd: $out" || return 1
     out_cmd="$(backups "$cmd" --help)" || fail "backups $cmd --help failed: $out_cmd" || return 1
     echo "$out_cmd" | head -n 1 | grep -q "^backups $cmd" || fail "$cmd's help: $out_cmd" || return 1
@@ -471,6 +471,99 @@ test_scratch_cms_of_a_backup_with_no_dump_says_so() {
   out="$(backups scratch-cms latest)" && fail "scratch-cms should fail: $out" && return 1
   echo "$out" | grep -q "no pg_dump custom-format dump" || fail "unexpected output: $out" || return 1
   [ -z "$(docker ps -aq -f name="^$BACKUP_SCRATCH_CONTAINER\$")" ] || fail "it started a container anyway"
+}
+
+# --- The restore check ---------------------------------------------------------------
+
+export BACKUP_RESTORE_CHECK_CONTAINER=backups-restore-check-test
+
+# Whether the restore check's container exists, running or not.
+check_container_exists() { [ -n "$(docker ps -aq -f name="^$BACKUP_RESTORE_CHECK_CONTAINER\$")" ]; }
+
+# Removes the restore check's containers when a test ends, however it ends.
+remove_check_on_exit() {
+  trap 'docker rm -f -v "$BACKUP_RESTORE_CHECK_CONTAINER" "$BACKUP_SCRATCH_CONTAINER-maker" > /dev/null 2>&1' EXIT
+}
+
+# A CMS backup as payload's recipe writes it, payload.tar, holding a dump of one table,
+# pages, with one row, and the given row counts (printf text: "table\trows\n" lines).
+cms_backup_with_counts() {
+  mkdir "$T/pack"
+  make_cms_dump "$T/pack/payload.dump"
+  printf "$1" > "$T/pack/row-counts.tsv"
+  tar -cf "$T/payload.tar" -C "$T/pack" payload.dump row-counts.tsv
+  cms_backing_up "$T/payload.tar"
+}
+
+test_restore_check_passes_on_a_good_backup_and_removes_its_container() {
+  have_docker || return 0
+  remove_check_on_exit
+  cms_backup_with_counts 'pages\t1\n'
+  run_at 2026-10-20T07:00:00Z
+  local out
+  out="$(backups restore-check)" || fail "restore-check failed: $out" || return 1
+  echo "$out" | grep -q "passed" || fail "unexpected output: $out" || return 1
+  echo "$out" | grep -q "2026-10-20T070000Z-payload.tar.age" || fail "does not name the backup: $out" || return 1
+  ! check_container_exists || fail "the container is still there" || return 1
+  assert_eq "$(ls -A "$T/staging")" "" "decrypted backup left behind"
+}
+
+# Runs the restore check, which must fail with the given text in its output, and leave
+# neither its container nor the decrypted backup behind.
+check_fails_with() {
+  local out
+  out="$(backups restore-check)" && fail "restore-check should fail: $out" && return 1
+  echo "$out" | grep -qF -- "$1" || fail "expected \"$1\" in: $out" || return 1
+  ! check_container_exists || fail "the container is still there" || return 1
+  assert_eq "$(ls -A "$T/staging" 2>/dev/null)" "" "decrypted backup left behind"
+}
+
+test_restore_check_fails_on_a_dump_missing_a_table() {
+  have_docker || return 0
+  remove_check_on_exit
+  cms_backup_with_counts 'pages\t1\nusers\t3\n'
+  run_at 2026-10-20T07:00:00Z
+  check_fails_with "Failed at check tables: table users is missing"
+}
+
+test_restore_check_fails_when_a_table_has_fewer_rows_than_counted() {
+  have_docker || return 0
+  remove_check_on_exit
+  cms_backup_with_counts 'pages\t5\n'
+  run_at 2026-10-20T07:00:00Z
+  check_fails_with "Failed at check tables: table pages has 1 rows; the backup counted 5"
+}
+
+test_restore_check_fails_on_a_corrupt_dump() {
+  have_docker || return 0
+  remove_check_on_exit
+  mkdir "$T/pack"
+  printf 'PGDMP and then nothing pg_restore can read' > "$T/pack/payload.dump"
+  printf 'pages\t1\n' > "$T/pack/row-counts.tsv"
+  tar -cf "$T/payload.tar" -C "$T/pack" payload.dump row-counts.tsv
+  cms_backing_up "$T/payload.tar"
+  run_at 2026-10-20T07:00:00Z
+  check_fails_with "Failed at load: pg_restore exited"
+}
+
+test_restore_check_fails_on_a_corrupt_backup_file() {
+  app_working payload
+  run_at 2026-10-20T07:00:00Z
+  echo "not an age file" > "$T/r2/indy-center-backups/daily/payload/2026-10-20T070000Z-payload.txt.age"
+  check_fails_with "Failed at download and decrypt: Decrypting failed"
+}
+
+test_restore_check_fails_with_no_backup() {
+  check_fails_with "Failed at download and decrypt: No backups of payload"
+}
+
+test_restore_check_fails_on_a_backup_without_row_counts() {
+  have_docker || return 0
+  remove_check_on_exit
+  make_cms_dump "$T/payload.dump"
+  cms_backing_up "$T/payload.dump"
+  run_at 2026-10-20T07:00:00Z
+  check_fails_with "Failed at unpack: 2026-10-20T070000Z-payload.dump.age has no row-counts.tsv"
 }
 
 # Every file on the fake VPS with its size and time, to show a command changed nothing.
