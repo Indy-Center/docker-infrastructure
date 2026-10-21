@@ -514,20 +514,21 @@ cmd_inventory() {
 
 help_all() {
   cat <<'EOF'
-backups: everyday backup jobs, as deploy on the VPS.
+backups: everyday backup jobs, run as deploy on the VPS.
 
-  backups now <app>               back up one app now, before a risky change
-  backups list <app>              list an app's backups, oldest first
-  backups fetch <app> <backup>    download and decrypt one, to look inside it
-  backups restore <app> <backup>  put an app's data back from a backup (asks first)
-  backups scratch-cms <backup>    load a CMS backup into a throwaway database
-  backups scratch-cms remove      and remove it again
-  backups media-find <text>       find a CMS upload in the media copy
+  backups now <app>                  back up one app now, before a risky change
+  backups list <app>                 list an app's backups, oldest first
+  backups fetch <app> <backup>       download and decrypt one, to look inside it
+  backups restore <app> <backup>     put an app's data back from a backup (asks first)
+  backups scratch-cms <backup>       load a CMS backup into a throwaway database
+  backups scratch-cms remove         and remove it again
+  backups media-find <text>          find a CMS upload in the media copy
   backups media-get <bucket>/<path>  download one file from the media copy
-  backups inventory               print the VPS's facts, to paste to an agent
+  backups inventory                  print the VPS's facts, to paste to an agent
 
 Every command takes --help, for example: backups list --help
-Everything is logged to ~/backup-runner/logs/runner.log, as the hourly runs are.
+Only restore changes a live app, and it asks first. now and restore also write to
+~/backup-runner/logs/runner.log, as the hourly runs do.
 EOF
 }
 
