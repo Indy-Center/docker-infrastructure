@@ -437,6 +437,8 @@ EOF
 cmd_media-get() {
   local path="${1:-}" folder="${2:-.}"
   need "$path" media-get
+  # A bucket, then a file's path in it: payload-media/plane.png, not payload-media alone.
+  [[ "$path" == ?*/*[^/] ]] || die "Give the file as <bucket>/<path>, as media-find prints it (payload-media/plane.png), not \"$path\"."
   local name="${path##*/}" bucket="${path%%/*}" key="${path#*/}"
   [ -d "$folder" ] || die "No folder $folder to download into."
   [ ! -e "$folder/$name" ] || die "$folder/$name already exists; move it or download into another folder."

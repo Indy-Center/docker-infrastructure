@@ -342,6 +342,15 @@ test_media_find_and_get_bring_back_a_file_deleted_from_the_cms() {
   echo "$out" | grep -q "payload-media.*courses/Plane.png" || fail "no put-back instructions: $out"
 }
 
+test_media_get_without_a_bucket_and_path_says_what_it_needs() {
+  local arg out
+  for arg in payload-media payload-media/ plane.png; do
+    out="$(backups media-get "$arg" "$T")" && fail "media-get $arg should fail: $out" && return 1
+    echo "$out" | grep -q "<bucket>/<path>" || fail "media-get $arg: $out" || return 1
+  done
+  return 0
+}
+
 test_media_get_of_a_file_not_in_the_copy_says_so() {
   local out
   out="$(backups media-get payload-media/nothing.png "$T")" && fail "media-get should fail: $out" && return 1
