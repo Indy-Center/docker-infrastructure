@@ -279,7 +279,9 @@ test_scratch_cms_loads_the_cms_recipes_tar_of_a_custom_format_dump() {
   # format, made here with Postgres 17 itself) and row-counts.tsv.
   docker run -d --name "$BACKUP_SCRATCH_CONTAINER" -e POSTGRES_PASSWORD=x -e POSTGRES_DB=payload postgres:17 > /dev/null
   until docker exec "$BACKUP_SCRATCH_CONTAINER" pg_isready -h 127.0.0.1 -U postgres -q; do sleep 1; done
-  scratch_sql "CREATE TABLE pages (slug text); INSERT INTO pages VALUES ('sops');" > /dev/null
+  # Owned by a "payload" role, as the live CMS's tables are; the scratch database has no
+  # such role, so the load must leave ownership out.
+  scratch_sql "CREATE ROLE payload; CREATE TABLE pages (slug text); INSERT INTO pages VALUES ('sops'); ALTER TABLE pages OWNER TO payload;" > /dev/null
   mkdir "$T/pack"
   docker exec "$BACKUP_SCRATCH_CONTAINER" pg_dump -U postgres -Fc payload > "$T/pack/payload.dump"
   printf 'pages\t1\n' > "$T/pack/row-counts.tsv"
@@ -290,6 +292,7 @@ test_scratch_cms_loads_the_cms_recipes_tar_of_a_custom_format_dump() {
 
   local out
   out="$(backups scratch-cms latest)" || fail "scratch-cms failed: $out" || return 1
+  echo "$out" | grep -q "loading reported errors" && fail "the load had errors: $out" && return 1
   assert_eq "$(scratch_sql 'select slug from pages')" "sops"
 }
 
