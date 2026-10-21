@@ -65,17 +65,40 @@ lock_and_log() {
 # 2026-10-20T070000Z-payload.tar.age. The same file can sit in several tiers (the first
 # of a day is copied to daily/, and so on), and all copies are the same backup.
 
+# Lists a folder in the bucket with `rclone lsf`, options first, the folder last. A
+# folder that doesn't exist lists as empty (rclone exits 3; on R2 an empty folder doesn't
+# exist). Any other failure (R2 unreachable, a bad key, a broken rclone.conf) prints
+# rclone's own error and returns non-zero, so it never reads as "nothing there".
+list_bucket() {
+  local err status
+  # rclone's output goes straight out (fd 3); only its errors are caught, in err.
+  { err="$(rclone lsf "$@" 2>&1 >&3 3>&-)"; status=$?; } 3>&1
+  [ "$status" = 0 ] || [ "$status" = 3 ] && return 0
+  echo "Couldn't list ${*: -1}: $(echo "$err" | tail -n 1)" >&2
+  return 1
+}
+
 # Every backup of an app, one line each, oldest first: "<name> <bytes> <tiers…>".
 app_backups() {
-  local app="$1" tier
+  local app="$1" tier listing all=""
   for tier in $TIERS; do
-    rclone lsf --files-only --format ps --separator ' ' "$BUCKET/$tier/$app/" 2>/dev/null \
-      | sed "s/\$/ $tier/"
-  done | awk '
+    listing="$(list_bucket --files-only --format ps --separator ' ' "$BUCKET/$tier/$app/")" || return 1
+    [ -n "$listing" ] && all+="$(sed "s/\$/ $tier/" <<< "$listing")"$'\n'
+  done
+  printf '%s' "$all" | awk '
     # Joins the tiers of each name, keeping the order the tiers were listed in.
     { if (!($1 in size)) { size[$1] = $2; order[++n] = $1 }; tiers[$1] = tiers[$1] " " $3 }
     END { for (i = 1; i <= n; i++) print order[i], size[order[i]] tiers[order[i]] }
   ' | sort
+}
+
+# The same, but stops with a message if the app has no backups at all. Use it as
+#   lines="$(backups_of "$app")" || exit 1
+backups_of() {
+  local lines
+  lines="$(app_backups "$1")" || exit 1
+  [ -n "$lines" ] || die "No backups of $1 in $BUCKET. Is the name right? Apps are named for their folder in $APPS_DIR."
+  echo "$lines"
 }
 
 # Finds the one backup of an app that a person asked for: "latest", a full name, or the
@@ -83,8 +106,7 @@ app_backups() {
 # it), or stops with a message if none or several match.
 find_backup() {
   local app="$1" want="$2" lines matches count
-  lines="$(app_backups "$app")"
-  [ -n "$lines" ] || die "No backups of $app in $BUCKET. Is the name right? Apps are named for their folder in $APPS_DIR."
+  lines="$(backups_of "$app")" || exit 1
   if [ "$want" = latest ]; then
     matches="$(echo "$lines" | tail -n 1)"
   else
@@ -143,8 +165,7 @@ EOF
 cmd_list() {
   local app="${1:-}" lines
   need "$app" list
-  lines="$(app_backups "$app")"
-  [ -n "$lines" ] || die "No backups of $app in $BUCKET. Is the name right? Apps are named for their folder in $APPS_DIR."
+  lines="$(backups_of "$app")" || exit 1
   echo "Backups of $app (UTC, oldest first):"
   # The size, printed as people read it, between the name and the tiers.
   local name bytes tiers
@@ -398,8 +419,9 @@ EOF
 cmd_media-find() {
   local text="${1:-}"
   need "$text" media-find
-  local found
-  found="$(rclone lsf -R --files-only "$BUCKET/media/" | grep -iF -- "$text")"
+  local all found
+  all="$(list_bucket -R --files-only "$BUCKET/media/")" || exit 1
+  found="$(grep -iF -- "$text" <<< "$all")"
   [ -n "$found" ] || die "No file in the media copy has \"$text\" in its path."
   echo "Files in the media copy matching \"$text\":"
   echo "$found"
@@ -427,8 +449,9 @@ cmd_media-get() {
   [ -d "$folder" ] || die "No folder $folder to download into."
   [ ! -e "$folder/$name" ] || die "$folder/$name already exists; move it or download into another folder."
   # lsf of one file lists it only if it exists.
-  [ -n "$(rclone lsf "$BUCKET/media/$path" 2>/dev/null)" ] \
-    || die "No file media/$path in the media copy. backups media-find <part of its name> finds it."
+  local listing
+  listing="$(list_bucket "$BUCKET/media/$path")" || exit 1
+  [ -n "$listing" ] || die "No file media/$path in the media copy. backups media-find <part of its name> finds it."
   echo "Downloading media/$path to $folder/$name"
   rclone copyto "$BUCKET/media/$path" "$folder/$name" || die "Download failed."
   echo "Done: $folder/$name"

@@ -93,6 +93,21 @@ test_list_of_an_app_with_no_backups_says_so() {
   echo "$out" | grep -q "No backups of nothing" || fail "unexpected output: $out"
 }
 
+test_a_bucket_that_cant_be_listed_says_so_rather_than_finding_nothing() {
+  app_working cms
+  run_at 2026-10-20T07:00:00Z
+  # As a bad R2 key or a broken rclone.conf would.
+  printf '[r2]\ntype = nosuchbackend\n' > "$T/runner/secrets/rclone.conf"
+  local cmd out
+  for cmd in "list cms" "fetch cms latest $T" "media-find plane" "media-get payload-media/plane.png $T"; do
+    out="$(backups $cmd)" && fail "$cmd should fail: $out" && return 1
+    echo "$out" | grep -q "Couldn't list" || fail "$cmd: $out" || return 1
+    echo "$out" | grep -q "nosuchbackend" || fail "$cmd does not show rclone's error: $out" || return 1
+    echo "$out" | grep -qi "no backups\|no file" && fail "$cmd blames the name: $out" && return 1
+  done
+  return 0
+}
+
 test_fetch_downloads_and_decrypts_a_chosen_backup() {
   app_working cms
   echo "cms 6 14" > "$T/schedule.conf"
