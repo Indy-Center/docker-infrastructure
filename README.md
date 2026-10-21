@@ -190,7 +190,7 @@ rclone lsf r2:indy-center-backups/daily/payload/
 
 ### Helper commands
 
-`backups` does each everyday backup job in one command, so nobody has to remember rclone or age. Run it as `deploy` on the VPS (from your own login, `sudo -iu deploy` first). The deploy installs it in `~/.local/bin`, which Ubuntu puts on `PATH` at login; `bash ~/backup-runner/backups.sh` is the same thing. Every command prints what it is about to do, and `backups <command> --help` explains it in full.
+`backups` does each everyday backup job in one command, so nobody has to remember rclone or age. Run it as `deploy` on the VPS (from your own login, `sudo -iu deploy` first). The deploy installs it in `~/.local/bin` and adds that folder to `PATH` in `deploy`'s `~/.bashrc` and `~/.profile`, so any new shell finds it (one already open needs `exec bash -l`); `bash ~/backup-runner/backups.sh` is the same thing. Every command prints what it is about to do, and `backups <command> --help` explains it in full.
 
 | Command | What it does |
 | ------- | ------------ |
