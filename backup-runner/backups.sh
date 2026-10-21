@@ -19,6 +19,30 @@ umask 077
 # Prints a message to stderr and stops.
 die() { echo "$*" >&2; exit 1; }
 
+# --- Cleaning up -----------------------------------------------------------------------
+# Decrypted backups and recipe output hold members' data, so whatever a command puts in
+# staging or a temp folder is removed when it ends, however it ends: done, failed,
+# Ctrl-C, killed, or its SSH session dropped (a hang-up).
+
+CLEANUP=()
+# Marks paths to remove when this command ends.
+remove_on_exit() { CLEANUP+=("$@"); }
+trap 'rm -rf "${CLEANUP[@]}"' EXIT
+# Each of these signals ends the command through the EXIT trap above.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Makes an empty staging folder for this command, ~/backups/<name>, that only deploy can
+# open and that is removed when the command ends. Sets STAGE to its path.
+new_stage() {
+  STAGE="$STAGING_DIR/$1"
+  rm -rf "$STAGE"
+  mkdir -p "$STAGING_DIR"
+  mkdir -m 700 "$STAGE"
+  remove_on_exit "$STAGE"
+}
+
 # A person is watching a helper, so its failures are shown to them rather than sent to
 # tech-team-alerts (lib.sh's alert, which back_up uses).
 alert() { log "not sent to Discord, as a person ran this: $1"; }
@@ -85,20 +109,16 @@ fetch_into() {
   [ -d "$folder" ] || die "No folder $folder to fetch into."
   [ ! -e "$FETCHED" ] || die "$FETCHED already exists; move it or fetch into another folder."
   echo "Downloading $FOUND_TIER/$app/$FOUND_NAME and decrypting it to $FETCHED"
-  # The encrypted file goes to a temp folder first, so a failed download or decrypt
-  # leaves nothing half-written behind.
+  # Downloaded and decrypted in a hidden work folder beside the result, that only deploy
+  # can open (mktemp -d makes it so), then moved into place: a failed or interrupted
+  # fetch leaves nothing half-written, and the work folder goes when the command ends.
   local work
-  work="$(mktemp -d)"
-  if ! rclone copyto "$BUCKET/$FOUND_TIER/$app/$FOUND_NAME" "$work/$FOUND_NAME"; then
-    rm -rf "$work"
-    die "Download failed."
-  fi
-  if ! age -d -i "$SECRETS/age.key" -o "$work/decrypted" "$work/$FOUND_NAME"; then
-    rm -rf "$work"
-    die "Decrypting failed: is $SECRETS/age.key the key these backups were made with?"
-  fi
+  work="$(mktemp -d "$folder/.fetching-XXXXXX")" || die "Can't write to $folder."
+  remove_on_exit "$work"
+  rclone copyto "$BUCKET/$FOUND_TIER/$app/$FOUND_NAME" "$work/$FOUND_NAME" || die "Download failed."
+  age -d -i "$SECRETS/age.key" -o "$work/decrypted" "$work/$FOUND_NAME" \
+    || die "Decrypting failed: is $SECRETS/age.key the key these backups were made with?"
   mv "$work/decrypted" "$FETCHED"
-  rm -rf "$work"
 }
 
 # Stops with a command's help when a required argument is missing.
@@ -180,6 +200,9 @@ cmd_now() {
   [ -d "$APPS_DIR/$app" ] || die "No app $app: there is no folder $APPS_DIR/$app."
   [ -f "$APPS_DIR/$app/backup.sh" ] || die "$app has no backup.sh in $APPS_DIR/$app, so it can't be backed up."
   lock_and_log now "$app"
+  # back_up removes its staging folder when it finishes; this covers being interrupted,
+  # which would otherwise leave the recipe's unencrypted file there.
+  remove_on_exit "$STAGING_DIR/$app"
   echo "Backing up $app into frequent/ with its backup.sh…"
   ONLY_FREQUENT=yes back_up "$app" || die "The backup of $app failed (above)."
   echo "Done: frequent/$app/ in $BUCKET. backups list $app shows it."
@@ -211,11 +234,8 @@ cmd_restore() {
   [ -f "$dir/restore.sh" ] || die "$app has no restore.sh in $dir, so it can't be restored with this command. Its backups can still be fetched (backups fetch $app $want); putting the data back is then up to the app's own README."
 
   # The decrypted backup waits in its own staging folder, removed however this ends.
-  local stage="$STAGING_DIR/restore-$app"
-  rm -rf "$stage"
-  mkdir -p "$stage"
-  trap "rm -rf $(printf %q "$stage")" EXIT
-  fetch_into "$app" "$want" "$stage"
+  new_stage "restore-$app"
+  fetch_into "$app" "$want" "$STAGE"
 
   echo
   echo "This runs $dir/restore.sh with $FOUND_NAME."
@@ -312,11 +332,9 @@ cmd_scratch-cms() {
   scratch_exists && die "A scratch CMS database is already running ($SCRATCH_CONTAINER). Remove it first: backups scratch-cms remove"
 
   # 1. The backup, decrypted into its own staging folder, removed however this ends.
-  local stage="$STAGING_DIR/scratch-cms" dump
-  rm -rf "$stage"
-  mkdir -p "$stage"
-  trap "rm -rf $(printf %q "$stage")" EXIT
-  fetch_into "$CMS_APP" "$want" "$stage"
+  local dump
+  new_stage scratch-cms
+  fetch_into "$CMS_APP" "$want" "$STAGE"
   dump="$(find_dump "$FETCHED")" || die "Can't find the database dump in $FOUND_NAME."
 
   # 2. A throwaway Postgres 17 with a new random password, on loopback only. -v on
@@ -346,7 +364,7 @@ cmd_scratch-cms() {
     docker exec -i "$SCRATCH_CONTAINER" psql -q -U postgres -d payload < "$dump" > /dev/null
   fi
   status=$?
-  rm -rf "$stage"
+  rm -rf "$STAGE"
   if [ "$status" != 0 ]; then
     echo "Warning: loading reported errors (above), so some of the data may be missing."
   fi

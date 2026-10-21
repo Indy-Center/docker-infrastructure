@@ -18,6 +18,38 @@ backups() {
   return "${PIPESTATUS[0]}"
 }
 
+# Runs a helper command in its own process group, waits until its output shows the given
+# text, then hangs up on the whole group, as a dropped SSH session does. Its output is in
+# $T/hup.out.
+# Temp files go to $T/tmp, so a test can see what was left there.
+#   hang_up_at <text> <command> <args…>
+hang_up_at() {
+  local text="$1"
+  shift
+  mkdir -p "$T/tmp"
+  env $(fake_vps_env) TMPDIR="$T/tmp" setsid bash "$repo/backup-runner/backups.sh" "$@" \
+    > "$T/hup.out" 2>&1 < /dev/null &
+  local pid=$! i
+  for i in $(seq 100); do grep -q "$text" "$T/hup.out" && break; sleep 0.1; done
+  grep -q "$text" "$T/hup.out" || fail "never got to \"$text\": $(cat "$T/hup.out")" || return 1
+  # A moment for what it started to get going.
+  sleep 0.5
+  kill -HUP -- "-$pid"
+  wait "$pid"
+  return 0
+}
+
+# An age that writes part of its output, then hangs, as a slow decrypt would.
+age_that_hangs() {
+  mkdir -p "$T/runner/bin"
+  cat > "$T/runner/bin/age" <<'EOF'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do [ "$1" = -o ] && echo "half of the data" > "$2"; shift; done
+sleep 30
+EOF
+  chmod +x "$T/runner/bin/age"
+}
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -98,6 +130,17 @@ test_fetch_refuses_a_name_that_matches_more_than_one_backup() {
   assert_eq "$(ls -A "$T/out")" "" "nothing fetched"
 }
 
+test_fetch_hung_up_while_decrypting_leaves_nothing_behind() {
+  app_working cms
+  run_at 2026-10-20T07:00:00Z
+  age_that_hangs
+  mkdir "$T/out"
+  hang_up_at Downloading fetch cms latest "$T/out" || return 1
+  sleep 0.5
+  assert_eq "$(ls -A "$T/out")" "" "left in the folder" || return 1
+  assert_eq "$(ls -A "$T/tmp")" "" "left in temp"
+}
+
 test_fetch_never_overwrites_a_file() {
   app_working cms
   run_at 2026-10-20T07:00:00Z
@@ -118,6 +161,14 @@ test_now_backs_up_into_frequent_the_way_the_runner_does() {
   assert_eq "$(ls -A "$T/staging")" "" "staging left behind" || return 1
   grep -q "cms: backed up 2026-10-20T053000Z-cms.txt.age" "$T/runner/logs/runner.log" \
     || fail "not in the runner's log"
+}
+
+test_now_hung_up_during_the_recipe_leaves_no_unencrypted_copy() {
+  mkdir -p "$T/apps/cms"
+  printf 'echo "data of cms" > "$1/cms.txt"\nsleep 30\n' > "$T/apps/cms/backup.sh"
+  hang_up_at "running backup.sh" now cms || return 1
+  sleep 0.5
+  assert_eq "$(ls -A "$T/staging")" "" "left in staging"
 }
 
 test_now_leaves_the_schedule_alone() {
@@ -201,6 +252,24 @@ test_restore_waiting_at_its_question_does_not_hold_up_the_hourly_run() {
   grep -q "skipped: the previous run is still running" "$T/runner/logs/runner.log" \
     && fail "the hourly run stepped aside for a restore that was only asking" && return 1
   assert_eq "$(cat "$T/restore-got")" "data of cms"
+}
+
+test_restore_hung_up_at_its_question_leaves_nothing_behind() {
+  app_restorable cms
+  run_at 2026-10-20T07:00:00Z
+  # Its input stays open and silent, as a person who walked away.
+  mkfifo "$T/answer"
+  exec 7<> "$T/answer"
+  env $(fake_vps_env) setsid bash "$repo/backup-runner/backups.sh" restore cms latest \
+    < "$T/answer" > "$T/hup.out" 2>&1 &
+  local pid=$! i
+  for i in $(seq 100); do grep -q "Type the app's name" "$T/hup.out" && break; sleep 0.1; done
+  kill -HUP -- "-$pid"
+  wait "$pid"
+  exec 7>&-
+  sleep 0.5
+  assert_eq "$(ls -A "$T/staging")" "" "left in staging" || return 1
+  [ ! -e "$T/restore-got" ] || fail "restore.sh ran"
 }
 
 test_restore_stops_at_an_app_with_no_restore_script() {
