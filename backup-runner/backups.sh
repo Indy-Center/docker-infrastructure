@@ -183,6 +183,55 @@ cmd_now() {
   echo "Done: frequent/$app/ in $BUCKET. backups list $app shows it."
 }
 
+help_restore() {
+  cat <<'EOF'
+backups restore <app> <backup>
+
+Puts one app's data back from a backup. It downloads and decrypts the backup, then, once
+you type the app's name to confirm, runs the app's own restore.sh with the decrypted file.
+restore.sh replaces the app's live data, stopping and starting what it needs to; anything
+changed since that backup is lost.
+
+<backup> is a name from `backups list <app>`, the start of one, or "latest". To keep
+today's data as well, run `backups now <app>` first. The decrypted file is deleted when
+the restore ends.
+
+  backups restore payload 2026-10-20T07
+EOF
+}
+
+cmd_restore() {
+  local app="${1:-}" want="${2:-}"
+  need "$want" restore
+  local dir="$APPS_DIR/$app"
+  [ -d "$dir" ] || die "No app $app: there is no folder $dir."
+  # The app contract (decision 0005): without restore.sh there is no standard way back.
+  [ -f "$dir/restore.sh" ] || die "$app has no restore.sh in $dir, so it can't be restored with this command. Its backups can still be fetched (backups fetch $app $want); putting the data back is then up to the app's own README."
+  log_and_lock restore "$app" "$want"
+
+  # The decrypted backup waits in its own staging folder, removed however this ends.
+  local stage="$STAGING_DIR/restore-$app"
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  trap "rm -rf $(printf %q "$stage")" EXIT
+  fetch_into "$app" "$want" "$stage"
+
+  echo
+  echo "This runs $dir/restore.sh with $FOUND_NAME."
+  echo "It replaces $app's live data with the data from that backup."
+  read -r -p "Type the app's name ($app) to go ahead, anything else to stop: " answer || true
+  [ "$answer" = "$app" ] || die "Stopped; nothing was changed."
+
+  # Run as the runner runs a recipe: with bash, from the app's folder, with the lock kept
+  # out of anything it starts.
+  log "$app: running restore.sh with $FOUND_NAME"
+  (cd "$dir" && bash restore.sh "$FETCHED") 9>&- < /dev/null
+  local status=$?
+  [ "$status" = 0 ] || die "restore.sh exited $status: the restore of $app failed (its output is above). Check the app before anything else."
+  log "$app: restore.sh finished"
+  echo "Done: $app is restored from $FOUND_NAME. Check it works."
+}
+
 # --- Help and dispatch -----------------------------------------------------------------
 
 help_all() {
@@ -192,6 +241,7 @@ backups: everyday backup jobs, as deploy on the VPS.
   backups now <app>               back up one app now, before a risky change
   backups list <app>              list an app's backups, oldest first
   backups fetch <app> <backup>    download and decrypt one, to look inside it
+  backups restore <app> <backup>  put an app's data back from a backup (asks first)
 
 Every command takes --help, for example: backups list --help
 Everything is logged to ~/backup-runner/logs/runner.log, as the hourly runs are.
@@ -202,7 +252,7 @@ command="${1:-}"
 shift || true
 case "$command" in
   "" | -h | --help | help) help_all ;;
-  list | fetch | now)
+  list | fetch | now | restore)
     # Each command's --help, wherever it is given.
     [[ " $* " == *" --help "* || " $* " == *" -h "* ]] && { "help_$command"; exit 0; }
     "cmd_$command" "$@"
