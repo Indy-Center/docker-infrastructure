@@ -137,11 +137,13 @@ jobs:
             backup-runner/ vps:backup-runner/
 
       # Installs the pinned age and rclone into ~/backup-runner/bin (skipped when already
-      # there), then the hourly crontab entry that starts the runner.
-      - name: Install the backup runner's tools and crontab entry
+      # there), the hourly crontab entry that starts the runner, and the `backups`
+      # command for the helper commands.
+      - name: Install the backup runner's tools, crontab entry and backups command
         run: |
           ssh vps '
             set -e
             bash ~/backup-runner/install-tools.sh ~/backup-runner/bin
             bash ~/backup-runner/install-cron.sh
+            bash ~/backup-runner/install-command.sh
           '
