@@ -370,16 +370,37 @@ cms_backing_up() {
   touch "$T/apps/payload/restore.sh"
 }
 
-test_scratch_cms_loads_a_plain_sql_backup_and_is_removed_on_request() {
+# Makes a pg_dump custom-format dump of a small CMS-like database with Postgres 17 itself,
+# at the given path. Its table is owned by a "payload" role, as the live CMS's tables are;
+# the scratch database has no such role, so the load must leave ownership out.
+make_cms_dump() {
+  local maker="$BACKUP_SCRATCH_CONTAINER-maker"
+  docker run -d --name "$maker" -e POSTGRES_PASSWORD=x -e POSTGRES_DB=payload postgres:17 > /dev/null
+  until docker exec "$maker" pg_isready -h 127.0.0.1 -U postgres -q; do sleep 1; done
+  docker exec "$maker" psql -q -U postgres -d payload -c "CREATE ROLE payload; CREATE TABLE pages (slug text); INSERT INTO pages VALUES ('sops'); ALTER TABLE pages OWNER TO payload;"
+  docker exec "$maker" pg_dump -U postgres -Fc payload > "$1"
+  docker rm -f -v "$maker" > /dev/null
+}
+
+# Removes the scratch containers when a test ends, however it ends.
+remove_scratch_on_exit() {
+  trap 'docker rm -f -v "$BACKUP_SCRATCH_CONTAINER" "$BACKUP_SCRATCH_CONTAINER-maker" > /dev/null 2>&1' EXIT
+}
+
+test_scratch_cms_loads_the_cms_recipes_tar_and_is_removed_on_request() {
   have_docker || return 0
-  trap 'docker rm -f -v "$BACKUP_SCRATCH_CONTAINER" > /dev/null 2>&1' EXIT
-  printf "CREATE TABLE courses (title text);\nINSERT INTO courses VALUES ('Tower 101');\n" > "$T/payload.sql"
-  cms_backing_up "$T/payload.sql"
+  remove_scratch_on_exit
+  # What payload's recipe writes: payload.tar, holding payload.dump and row-counts.tsv.
+  mkdir "$T/pack"
+  make_cms_dump "$T/pack/payload.dump"
+  printf 'pages\t1\n' > "$T/pack/row-counts.tsv"
+  tar -cf "$T/payload.tar" -C "$T/pack" payload.dump row-counts.tsv
+  cms_backing_up "$T/payload.tar"
   run_at 2026-10-20T07:00:00Z
 
   local out
   out="$(backups scratch-cms latest)" || fail "scratch-cms failed: $out" || return 1
-  assert_eq "$(scratch_sql 'select title from courses')" "Tower 101" || return 1
+  assert_eq "$(scratch_sql 'select slug from pages')" "sops" || return 1
   echo "$out" | grep -q "docker exec -it $BACKUP_SCRATCH_CONTAINER psql" || fail "no way to connect: $out" || return 1
   echo "$out" | grep -q "127.0.0.1:25432" || fail "no port to connect on: $out" || return 1
   assert_eq "$(ls -A "$T/staging")" "" "decrypted backup left behind" || return 1
@@ -392,28 +413,42 @@ test_scratch_cms_loads_a_plain_sql_backup_and_is_removed_on_request() {
   [ -z "$(docker ps -aq -f name="^$BACKUP_SCRATCH_CONTAINER\$")" ] || fail "the container is still there"
 }
 
-test_scratch_cms_loads_the_cms_recipes_tar_of_a_custom_format_dump() {
+test_scratch_cms_loads_a_bare_custom_format_dump() {
   have_docker || return 0
-  trap 'docker rm -f -v "$BACKUP_SCRATCH_CONTAINER" > /dev/null 2>&1' EXIT
-  # What payload's recipe writes: payload.tar, holding payload.dump (pg_dump's custom
-  # format, made here with Postgres 17 itself) and row-counts.tsv.
-  docker run -d --name "$BACKUP_SCRATCH_CONTAINER" -e POSTGRES_PASSWORD=x -e POSTGRES_DB=payload postgres:17 > /dev/null
-  until docker exec "$BACKUP_SCRATCH_CONTAINER" pg_isready -h 127.0.0.1 -U postgres -q; do sleep 1; done
-  # Owned by a "payload" role, as the live CMS's tables are; the scratch database has no
-  # such role, so the load must leave ownership out.
-  scratch_sql "CREATE ROLE payload; CREATE TABLE pages (slug text); INSERT INTO pages VALUES ('sops'); ALTER TABLE pages OWNER TO payload;" > /dev/null
+  remove_scratch_on_exit
+  make_cms_dump "$T/payload.dump"
+  cms_backing_up "$T/payload.dump"
+  run_at 2026-10-20T07:00:00Z
+  backups scratch-cms latest > /dev/null || fail "scratch-cms failed" || return 1
+  assert_eq "$(scratch_sql 'select slug from pages')" "sops"
+}
+
+test_scratch_cms_that_fails_to_load_says_so_and_is_not_ready() {
+  have_docker || return 0
+  remove_scratch_on_exit
+  # Starts like a custom-format dump, but isn't one.
+  printf 'PGDMP and then nothing pg_restore can read' > "$T/payload.dump"
+  cms_backing_up "$T/payload.dump"
+  run_at 2026-10-20T07:00:00Z
+  local out
+  out="$(backups scratch-cms latest)" && fail "scratch-cms should fail: $out" && return 1
+  echo "$out" | grep -q "Loading failed" || fail "unexpected output: $out" || return 1
+  echo "$out" | grep -q "is ready" && fail "it says it is ready: $out" && return 1
+  echo "$out" | grep -q "backups scratch-cms remove" || fail "no way to remove it: $out"
+}
+
+test_scratch_cms_of_a_backup_with_no_dump_says_so() {
+  have_docker || return 0
+  remove_scratch_on_exit
   mkdir "$T/pack"
-  docker exec "$BACKUP_SCRATCH_CONTAINER" pg_dump -U postgres -Fc payload > "$T/pack/payload.dump"
-  printf 'pages\t1\n' > "$T/pack/row-counts.tsv"
-  tar -cf "$T/payload.tar" -C "$T/pack" payload.dump row-counts.tsv
-  docker rm -f -v "$BACKUP_SCRATCH_CONTAINER" > /dev/null
+  echo "notes" > "$T/pack/my notes.txt"
+  tar -cf "$T/payload.tar" -C "$T/pack" "my notes.txt"
   cms_backing_up "$T/payload.tar"
   run_at 2026-10-20T07:00:00Z
-
   local out
-  out="$(backups scratch-cms latest)" || fail "scratch-cms failed: $out" || return 1
-  echo "$out" | grep -q "loading reported errors" && fail "the load had errors: $out" && return 1
-  assert_eq "$(scratch_sql 'select slug from pages')" "sops"
+  out="$(backups scratch-cms latest)" && fail "scratch-cms should fail: $out" && return 1
+  echo "$out" | grep -q "no pg_dump custom-format dump" || fail "unexpected output: $out" || return 1
+  [ -z "$(docker ps -aq -f name="^$BACKUP_SCRATCH_CONTAINER\$")" ] || fail "it started a container anyway"
 }
 
 # Every file on the fake VPS with its size and time, to show a command changed nothing.

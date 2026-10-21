@@ -291,32 +291,29 @@ SCRATCH_PORT="${BACKUP_SCRATCH_PORT:-15432}"
 # Whether the scratch container exists, running or not.
 scratch_exists() { [ -n "$(docker ps -aq -f name="^$SCRATCH_CONTAINER\$")" ]; }
 
-# Finds the database dump in a decrypted CMS backup and prints its path. The recipe may
-# write the dump itself (pg_dump's custom format, or plain SQL), gzipped or not, or a tar
-# archive holding one beside other files. payload's recipe writes the last: payload.tar,
-# holding payload.dump (custom format) and row-counts.tsv. Unpacks into the file's folder.
+# Whether a file is a pg_dump custom-format dump: those start "PGDMP".
+is_dump() { [ "$(head -c 5 "$1")" = PGDMP ]; }
+
+# Finds the database dump in a decrypted CMS backup and prints its path: the file itself
+# if it is a custom-format dump, or the dump inside it if it is a tar archive. payload's
+# recipe writes the archive: payload.tar, holding payload.dump and row-counts.tsv. An
+# archive is unpacked beside it, in the staging folder.
 find_dump() {
-  local file="$1" folder
-  folder="$(dirname "$file")"
-  if [ "$(head -c 2 "$file" | od -An -tx1 | tr -d ' ')" = 1f8b ]; then
-    # gzip: unpack it, then look again (it may be a .tar.gz).
-    gunzip -c "$file" > "$file.unzipped" && rm "$file" || return 1
-    find_dump "$file.unzipped"
-  elif tar -tf "$file" > /dev/null 2>&1; then
-    mkdir "$folder/unpacked" && tar -xf "$file" -C "$folder/unpacked" && rm "$file" || return 1
-    # The one file that is a custom-format dump (it starts "PGDMP") or is named .sql.
-    local f
-    for f in $(find "$folder/unpacked" -type f | sort); do
-      if [ "$(head -c 5 "$f")" = PGDMP ] || [[ "$f" == *.sql || "$f" == *.sql.gz ]]; then
-        find_dump "$f"
-        return
-      fi
-    done
-    echo "No database dump (a pg_dump file or a .sql file) in the archive: $(cd "$folder/unpacked" && find . -type f)" >&2
-    return 1
-  else
+  local file="$1" unpacked f
+  if is_dump "$file"; then
     echo "$file"
+    return
   fi
+  if tar -tf "$file" > /dev/null 2>&1; then
+    unpacked="$(dirname "$file")/unpacked"
+    mkdir "$unpacked" && tar -xf "$file" -C "$unpacked" || return 1
+    # Each file in the archive, by name, until one is a dump.
+    while IFS= read -r -d '' f; do
+      is_dump "$f" && { echo "$f"; return; }
+    done < <(find "$unpacked" -type f -print0 | sort -z)
+  fi
+  echo "$FOUND_NAME holds no pg_dump custom-format dump, neither as the file itself nor inside it as a tar archive." >&2
+  return 1
 }
 
 help_scratch-cms() {
@@ -355,7 +352,7 @@ cmd_scratch-cms() {
   local dump
   new_stage scratch-cms
   fetch_into "$CMS_APP" "$want" "$STAGE"
-  dump="$(find_dump "$FETCHED")" || die "Can't find the database dump in $FOUND_NAME."
+  dump="$(find_dump "$FETCHED")" || exit 1
 
   # 2. A throwaway Postgres 17 with a new random password, on loopback only. -v on
   #    removal deletes its data volume too.
@@ -373,21 +370,16 @@ cmd_scratch-cms() {
     sleep 1
   done
 
-  # 3. Load the dump over stdin (so nothing needs copying into the container), with
-  #    pg_restore for a custom-format dump and psql for plain SQL. Ownership and grants
-  #    are left out: the scratch database has only the postgres user.
+  # 3. Load the dump with pg_restore, over stdin, so nothing needs copying into the
+  #    container. Ownership and grants are left out: the dump's tables belong to the
+  #    live CMS's "payload" role, and the scratch database has only the postgres user.
   echo "Loading $FOUND_NAME…"
-  local status
-  if [ "$(head -c 5 "$dump")" = PGDMP ]; then
-    docker exec -i "$SCRATCH_CONTAINER" pg_restore -U postgres -d payload --no-owner --no-privileges < "$dump"
-  else
-    docker exec -i "$SCRATCH_CONTAINER" psql -q -U postgres -d payload < "$dump" > /dev/null
-  fi
-  status=$?
+  docker exec -i "$SCRATCH_CONTAINER" pg_restore -U postgres -d payload --no-owner --no-privileges < "$dump"
+  local status=$?
   rm -rf "$STAGE"
-  if [ "$status" != 0 ]; then
-    echo "Warning: loading reported errors (above), so some of the data may be missing."
-  fi
+  [ "$status" = 0 ] || die "Loading failed: pg_restore exited $status (its errors are above), so the scratch database is incomplete or empty. It is still there to look at:
+  docker exec -it $SCRATCH_CONTAINER psql -U postgres payload
+Remove it with: backups scratch-cms remove"
 
   cat <<EOF
 

@@ -208,7 +208,7 @@ rclone lsf r2:indy-center-backups/daily/payload/
 
 Only `restore` changes a live app, and it asks first. `now` and `restore` take the run lock just before they back up or restore (`restore` only once you have confirmed), and from then on write to `runner.log` as the hourly runs do. They wait for a running hourly run to finish, and an hourly run that starts while they work steps aside until the next hour, which makes up anything missed.
 
-`scratch-cms` finds the database dump in whatever the CMS's recipe wrote. payload's recipe writes `payload.tar`, holding `payload.dump` and `row-counts.tsv`, so it unpacks that and loads `payload.dump`. It also takes a `pg_dump` custom-format file (loaded with `pg_restore`), plain SQL (loaded with `psql`), either gzipped, or a tar archive holding one of those beside other files. Ownership and grants are left out, since the scratch database has only the `postgres` user.
+`scratch-cms` loads a `pg_dump` custom-format dump with `pg_restore`: the backup itself, or the dump inside it when it is a tar archive. payload's recipe writes `payload.tar`, holding `payload.dump` and `row-counts.tsv`, so it unpacks that and loads `payload.dump`. Ownership and grants are left out, since the dump's tables belong to the live CMS's `payload` role and the scratch database has only `postgres`. If `pg_restore` fails, it says so and stops, leaving the container to look at until you remove it.
 
 The runbooks for recovering one app or rebuilding the VPS, being written for tech.flyindycenter.com's Operations section, are built on these commands.
 
