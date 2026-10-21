@@ -122,10 +122,11 @@ restore_check_due() {
   (( RUN_HOUR - last >= 7 * 24 ))
 }
 
-# Runs the check, keeps its result for the report, and alerts if it fails. The check
-# removes its container however it ends, a timeout included: timeout stops it with TERM,
-# which it traps, and KILLs it a minute later if it is still going. A container left by
-# that is removed by the next check before it starts its own.
+# Runs the check, keeps its result for the report, and alerts if it fails. A check that
+# times out shows as failed in the report, without an alert. The check removes its
+# container however it ends, a timeout included: timeout stops it with TERM, which it
+# traps, and KILLs it a minute later if it is still going. A container left by that is
+# removed by the next check before it starts its own.
 run_restore_check() {
   local out="$STAGING_DIR/restore-check.log" status when
   when="$(date -u -d "$NOW" '+%Y-%m-%d %H:%M')"
@@ -138,17 +139,16 @@ run_restore_check() {
   cat "$out"
   if [ "$status" = 0 ]; then
     echo "passed $when" > "$STATE/restore-check"
+  # timeout exits 124 when it stops the check, 137 when it has to kill it.
+  elif [ "$status" = 124 ] || [ "$status" = 137 ]; then
+    echo "failed $when" > "$STATE/restore-check"
+    log "restore check still running after $RESTORE_CHECK_TIMEOUT, so it was stopped"
   else
     echo "failed $when" > "$STATE/restore-check"
     local detail
-    # timeout exits 124 when it stops the check, 137 when it has to kill it.
-    if [ "$status" = 124 ] || [ "$status" = 137 ]; then
-      detail="still running after $RESTORE_CHECK_TIMEOUT, so it was stopped"
-    else
-      # From the line naming the step that failed (backups.sh's die), or the last lines.
-      detail="$(sed -n '/^Failed at /,$p' "$out" | head -n 15)"
-      [ -n "$detail" ] || detail="$(tail -n 10 "$out")"
-    fi
+    # From the line naming the step that failed (backups.sh's die), or the last lines.
+    detail="$(sed -n '/^Failed at /,$p' "$out" | head -n 15)"
+    [ -n "$detail" ] || detail="$(tail -n 10 "$out")"
     alert "Weekly restore check of the newest CMS backup failed, so it may not restore. \`backups restore-check\` runs it again.
 \`\`\`
 $detail

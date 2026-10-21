@@ -150,7 +150,7 @@ Every Sunday, in the 07:00 UTC run after the backups, the runner proves the newe
 4. loads the dump with `pg_restore --no-owner --no-privileges`;
 5. checks each table in `row-counts.tsv` is there with at least that many rows.
 
-The container and the decrypted backup are removed afterwards, pass or fail. A failure raises an alert naming the step that failed (`Failed at load: pg_restore exited 1`, `Failed at check tables: table users is missing`), and the report shows `restore check  failed` with its time until the next check passes. A check still running after 30 minutes is stopped and counts as failed. A Sunday missed while the VPS was down is made up a week after the last check. A new box waits for its first Sunday. A box without `payload` runs no check. Run by hand, it first waits for any hourly run, since both use the same container name.
+The container and the decrypted backup are removed afterwards, pass or fail. A failure raises an alert naming the step that failed (`Failed at load: pg_restore exited 1`, `Failed at check tables: table users is missing`), and the report shows `restore check  failed` with its time until the next check passes. A check still running after 30 minutes is stopped and shows as failed in the report, without an alert. A Sunday missed while the VPS was down is made up a week after the last check. A new box waits for its first Sunday. A box without `payload` runs no check. Run by hand, it first waits for any hourly run, since both use the same container name.
 
 It loads the dump itself rather than running payload's `restore.sh` (decision 0005's standard way back), because `restore.sh` replaces the live CMS's data. So it proves the backup is good, not that `restore.sh` works: payload's own CI tests that.
 

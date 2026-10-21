@@ -380,7 +380,7 @@ test_restore_check_missed_on_sunday_is_made_up_a_week_after_the_last() {
   assert_eq "$(message_count alerts)" 1 "alerts the days after" || return 1
 }
 
-test_restore_check_that_times_out_says_so() {
+test_restore_check_that_times_out_shows_as_failed_without_an_alert() {
   app_working payload
   # A timeout that stops the check at once, as the real one would after 30 minutes.
   local real
@@ -393,8 +393,9 @@ exec "$real" "\$@"
 EOF
   chmod +x "$T/runner/bin/timeout"
   run_at 2026-10-25T07:00:00Z
-  assert_eq "$(message_count alerts)" 1 "alerts" || return 1
-  messages alerts | grep -q "still running after 30m" || fail "unexpected alert: $(messages alerts)"
+  assert_eq "$(message_count alerts)" 0 "alerts" || return 1
+  messages report | grep -Eq '^restore check +failed 2026-10-25 07:00$' || fail "report: $(messages report)" || return 1
+  grep -q "restore check still running after 30m" "$T/runner/logs/runner.log" || fail "the log does not say it timed out"
 }
 
 test_no_restore_check_without_a_cms_on_the_box() {
