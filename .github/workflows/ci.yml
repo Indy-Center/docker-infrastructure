@@ -71,14 +71,9 @@ jobs:
       - name: Helper command tests
         run: bash tests/backup-runner/helpers-test.sh
 
+      # In throwaway home folders: `backups` works by name in a new login or interactive shell.
       - name: The backups command installs and runs
-        run: |
-          # Where the deploy puts backups.sh on the VPS.
-          mkdir -p ~/backup-runner
-          cp backup-runner/*.sh ~/backup-runner/
-          bash backup-runner/install-command.sh
-          bash backup-runner/install-command.sh
-          ~/.local/bin/backups --help | grep -q '^backups: everyday backup jobs'
+        run: bash tests/backup-runner/install-command-test.sh
 
       - name: Crontab entry installs once, however often the deploy runs
         run: |
