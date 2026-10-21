@@ -210,4 +210,69 @@ test_media_get_of_a_file_not_in_the_copy_says_so() {
   echo "$out" | grep -q "No file media/payload-media/nothing.png" || fail "unexpected output: $out"
 }
 
+# The scratch CMS tests use their own container name and port, so they never meet a real
+# scratch database on the same machine.
+export BACKUP_SCRATCH_CONTAINER=backups-scratch-cms-test BACKUP_SCRATCH_PORT=25432
+
+# Whether Docker is usable here; the scratch CMS tests pass trivially without it.
+have_docker() {
+  docker info > /dev/null 2>&1 && return 0
+  echo "    skipped: no Docker"
+  return 1
+}
+
+# Runs SQL in the scratch database and prints the result, one row per line.
+scratch_sql() { docker exec "$BACKUP_SCRATCH_CONTAINER" psql -U postgres -tAc "$1" payload; }
+
+# A fake CMS whose recipe writes the given file as its backup.
+cms_backing_up() {
+  mkdir -p "$T/apps/payload"
+  cp "$1" "$T/fake-backup-file"
+  echo "cp \"$T/fake-backup-file\" \"\$1/$(basename "$1")\"" > "$T/apps/payload/backup.sh"
+  touch "$T/apps/payload/restore.sh"
+}
+
+test_scratch_cms_loads_a_plain_sql_backup_and_is_removed_on_request() {
+  have_docker || return 0
+  trap 'docker rm -f -v "$BACKUP_SCRATCH_CONTAINER" > /dev/null 2>&1' EXIT
+  printf "CREATE TABLE courses (title text);\nINSERT INTO courses VALUES ('Tower 101');\n" > "$T/payload.sql"
+  cms_backing_up "$T/payload.sql"
+  run_at 2026-10-20T07:00:00Z
+
+  local out
+  out="$(backups scratch-cms latest)" || fail "scratch-cms failed: $out" || return 1
+  assert_eq "$(scratch_sql 'select title from courses')" "Tower 101" || return 1
+  echo "$out" | grep -q "docker exec -it $BACKUP_SCRATCH_CONTAINER psql" || fail "no way to connect: $out" || return 1
+  echo "$out" | grep -q "127.0.0.1:25432" || fail "no port to connect on: $out" || return 1
+  assert_eq "$(ls -A "$T/staging")" "" "decrypted backup left behind" || return 1
+
+  # Only one at a time.
+  out="$(backups scratch-cms latest)" && fail "a second scratch-cms should stop: $out" && return 1
+  echo "$out" | grep -q "already" || fail "unexpected output: $out" || return 1
+
+  backups scratch-cms remove > /dev/null || fail "remove failed" || return 1
+  [ -z "$(docker ps -aq -f name="^$BACKUP_SCRATCH_CONTAINER\$")" ] || fail "the container is still there"
+}
+
+test_scratch_cms_loads_a_custom_format_dump_inside_an_archive() {
+  have_docker || return 0
+  trap 'docker rm -f -v "$BACKUP_SCRATCH_CONTAINER" > /dev/null 2>&1' EXIT
+  # A pg_dump custom-format dump, made with Postgres 17 itself, packed in a .tar.gz next to
+  # a row-count file, as a recipe might ship it.
+  docker run -d --name "$BACKUP_SCRATCH_CONTAINER" -e POSTGRES_PASSWORD=x -e POSTGRES_DB=payload postgres:17 > /dev/null
+  until docker exec "$BACKUP_SCRATCH_CONTAINER" pg_isready -h 127.0.0.1 -U postgres -q; do sleep 1; done
+  scratch_sql "CREATE TABLE pages (slug text); INSERT INTO pages VALUES ('sops');" > /dev/null
+  mkdir "$T/pack"
+  docker exec "$BACKUP_SCRATCH_CONTAINER" pg_dump -U postgres -Fc payload > "$T/pack/payload.dump"
+  echo '{"pages": 1}' > "$T/pack/counts.json"
+  tar -czf "$T/payload.tar.gz" -C "$T/pack" payload.dump counts.json
+  docker rm -f -v "$BACKUP_SCRATCH_CONTAINER" > /dev/null
+  cms_backing_up "$T/payload.tar.gz"
+  run_at 2026-10-20T07:00:00Z
+
+  local out
+  out="$(backups scratch-cms latest)" || fail "scratch-cms failed: $out" || return 1
+  assert_eq "$(scratch_sql 'select slug from pages')" "sops"
+}
+
 run_tests "$@"

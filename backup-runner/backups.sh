@@ -232,6 +232,132 @@ cmd_restore() {
   echo "Done: $app is restored from $FOUND_NAME. Check it works."
 }
 
+# --- The scratch CMS database ----------------------------------------------------------
+# A throwaway Postgres 17 (the CMS's version) loaded from a CMS backup, beside the live
+# CMS and never touching it: to look at old data, or copy something out of it.
+
+CMS_APP=payload
+SCRATCH_CONTAINER="${BACKUP_SCRATCH_CONTAINER:-backups-scratch-cms}"
+# Published on the VPS's loopback address only, for an SSH tunnel from a laptop.
+SCRATCH_PORT="${BACKUP_SCRATCH_PORT:-15432}"
+
+# Whether the scratch container exists, running or not.
+scratch_exists() { [ -n "$(docker ps -aq -f name="^$SCRATCH_CONTAINER\$")" ]; }
+
+# Finds the database dump in a decrypted CMS backup and prints its path. The recipe may
+# write the dump itself (pg_dump's custom format, or plain SQL), gzipped or not, or a tar
+# archive holding one beside other files (row counts, say). Unpacks into the file's folder.
+find_dump() {
+  local file="$1" folder
+  folder="$(dirname "$file")"
+  if [ "$(head -c 2 "$file" | od -An -tx1 | tr -d ' ')" = 1f8b ]; then
+    # gzip: unpack it, then look again (it may be a .tar.gz).
+    gunzip -c "$file" > "$file.unzipped" && rm "$file" || return 1
+    find_dump "$file.unzipped"
+  elif tar -tf "$file" > /dev/null 2>&1; then
+    mkdir "$folder/unpacked" && tar -xf "$file" -C "$folder/unpacked" && rm "$file" || return 1
+    # The one file that is a custom-format dump (it starts "PGDMP") or is named .sql.
+    local f
+    for f in $(find "$folder/unpacked" -type f | sort); do
+      if [ "$(head -c 5 "$f")" = PGDMP ] || [[ "$f" == *.sql || "$f" == *.sql.gz ]]; then
+        find_dump "$f"
+        return
+      fi
+    done
+    echo "No database dump (a pg_dump file or a .sql file) in the archive: $(cd "$folder/unpacked" && find . -type f)" >&2
+    return 1
+  else
+    echo "$file"
+  fi
+}
+
+help_scratch-cms() {
+  cat <<'EOF'
+backups scratch-cms <backup>
+backups scratch-cms remove
+
+Loads one CMS (payload) backup into a throwaway Postgres 17 database, beside the live CMS,
+so you can look at old data or copy something out of it. The live CMS is never touched.
+<backup> is a name from `backups list payload`, the start of one, or "latest".
+
+It starts a container named backups-scratch-cms, loads the backup into its database
+"payload", and prints how to connect: with psql on the VPS, or from your computer over an
+SSH tunnel (it listens on the VPS's 127.0.0.1:15432 only). Only one runs at a time.
+
+`backups scratch-cms remove` deletes the container and its data when you are done.
+
+  backups scratch-cms latest
+  backups scratch-cms remove
+EOF
+}
+
+cmd_scratch-cms() {
+  local want="${1:-}"
+  need "$want" scratch-cms
+  if [ "$want" = remove ]; then
+    scratch_exists || die "There is no scratch CMS database ($SCRATCH_CONTAINER) to remove."
+    echo "Removing $SCRATCH_CONTAINER and its data…"
+    docker rm -f -v "$SCRATCH_CONTAINER" > /dev/null || die "docker rm failed."
+    echo "Done."
+    return
+  fi
+  scratch_exists && die "A scratch CMS database is already running ($SCRATCH_CONTAINER). Remove it first: backups scratch-cms remove"
+
+  # 1. The backup, decrypted into its own staging folder, removed however this ends.
+  local stage="$STAGING_DIR/scratch-cms" dump
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  trap "rm -rf $(printf %q "$stage")" EXIT
+  fetch_into "$CMS_APP" "$want" "$stage"
+  dump="$(find_dump "$FETCHED")" || die "Can't find the database dump in $FOUND_NAME."
+
+  # 2. A throwaway Postgres 17 with a new random password, on loopback only. -v on
+  #    removal deletes its data volume too.
+  local password
+  password="$(tr -dc a-z0-9 < /dev/urandom | head -c 20)"
+  echo "Starting a throwaway Postgres 17, $SCRATCH_CONTAINER…"
+  docker run -d --name "$SCRATCH_CONTAINER" \
+    -e POSTGRES_PASSWORD="$password" -e POSTGRES_DB=payload \
+    -p "127.0.0.1:$SCRATCH_PORT:5432" postgres:17 > /dev/null \
+    || die "docker run failed."
+  # Ready once it answers over TCP: while it sets itself up it listens on a socket only.
+  local tries=0
+  until docker exec "$SCRATCH_CONTAINER" pg_isready -h 127.0.0.1 -U postgres -q; do
+    (( ++tries < 60 )) || die "Postgres did not start within a minute: docker logs $SCRATCH_CONTAINER shows why. Remove it with: backups scratch-cms remove"
+    sleep 1
+  done
+
+  # 3. Load the dump over stdin (so nothing needs copying into the container), with
+  #    pg_restore for a custom-format dump and psql for plain SQL. Ownership and grants
+  #    are left out: the scratch database has only the postgres user.
+  echo "Loading $FOUND_NAME…"
+  local status
+  if [ "$(head -c 5 "$dump")" = PGDMP ]; then
+    docker exec -i "$SCRATCH_CONTAINER" pg_restore -U postgres -d payload --no-owner --no-privileges < "$dump"
+  else
+    docker exec -i "$SCRATCH_CONTAINER" psql -q -U postgres -d payload < "$dump" > /dev/null
+  fi
+  status=$?
+  rm -rf "$stage"
+  if [ "$status" != 0 ]; then
+    echo "Warning: loading reported errors (above), so some of the data may be missing."
+  fi
+
+  cat <<EOF
+
+The scratch CMS database is ready, loaded from $FOUND_NAME. The live CMS is untouched.
+
+On the VPS:
+  docker exec -it $SCRATCH_CONTAINER psql -U postgres payload
+
+From your computer, tunnel in (with your usual SSH login), then connect any Postgres tool:
+  ssh -L $SCRATCH_PORT:127.0.0.1:$SCRATCH_PORT <you>@<vps>
+  postgres://postgres:$password@127.0.0.1:$SCRATCH_PORT/payload
+
+When you are done: backups scratch-cms remove
+EOF
+}
+
 help_media-find() {
   cat <<'EOF'
 backups media-find <text>
@@ -298,6 +424,8 @@ backups: everyday backup jobs, as deploy on the VPS.
   backups list <app>              list an app's backups, oldest first
   backups fetch <app> <backup>    download and decrypt one, to look inside it
   backups restore <app> <backup>  put an app's data back from a backup (asks first)
+  backups scratch-cms <backup>    load a CMS backup into a throwaway database
+  backups scratch-cms remove      and remove it again
   backups media-find <text>       find a CMS upload in the media copy
   backups media-get <bucket>/<path>  download one file from the media copy
 
@@ -310,7 +438,7 @@ command="${1:-}"
 shift || true
 case "$command" in
   "" | -h | --help | help) help_all ;;
-  list | fetch | now | restore | media-find | media-get)
+  list | fetch | now | restore | scratch-cms | media-find | media-get)
     # Each command's --help, wherever it is given.
     [[ " $* " == *" --help "* || " $* " == *" -h "* ]] && { "help_$command"; exit 0; }
     "cmd_$command" "$@"
