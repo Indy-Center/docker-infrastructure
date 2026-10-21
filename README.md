@@ -97,7 +97,7 @@ A failed recipe, encryption or upload raises an **alert** in tech-team-alerts fo
 
 ### What an app ships
 
-The runner knows nothing about any app. An app takes part by shipping, in its repository's `deploy/` folder (so in `~/apps/<app>/` on the box), either:
+The runner knows nothing about any app, except the CMS for the [restore check](#restore-check). An app takes part by shipping, in its repository's `deploy/` folder (so in `~/apps/<app>/` on the box), either:
 
 - **`backup.sh` and `restore.sh`**.
   - `backup.sh` is the recipe. It is called with one argument, an empty folder, and must write exactly one file there holding a consistent copy of all the app's data (a database dump, or an archive of a dump and files). It exits non-zero on any failure.
@@ -153,6 +153,12 @@ Every Sunday, in the 07:00 UTC run after the backups, the runner proves the newe
 The container and the decrypted backup are removed afterwards, pass or fail. A failure raises an alert naming the step that failed (`Failed at load: pg_restore exited 1`, `Failed at check tables: table users is missing`), and the report shows `restore check  failed` with its time until the next check passes. A check still running after 30 minutes is stopped and shows as failed in the report, without an alert. A Sunday missed while the VPS was down is made up a week after the last check. A new box waits for its first Sunday. A box without `payload` runs no check. Run by hand, it first waits for any hourly run, since both use the same container name.
 
 It loads the dump itself rather than running payload's `restore.sh` (decision 0005's standard way back), because `restore.sh` replaces the live CMS's data. So it proves the backup is good, not that `restore.sh` works: payload's own CI tests that.
+
+That makes the restore check the one part of the runner that knows about an app. It knows the CMS by name (`CMS_APP=payload` in `lib.sh`; `scratch-cms` uses it too), and it relies on what payload's recipe writes: a `payload.tar` holding a custom-format `pg_dump` and a `row-counts.tsv` of `table<TAB>rows` lines. That format is a contract between the two repos that only this README records:
+
+- If payload's recipe changes it (renames a file, drops the counts, or stops using `pg_dump`'s custom format), the next Sunday's check fails at "unpack" or "check tables" and alerts. Nothing breaks silently, but change both repos together.
+- If the CMS's folder in `~/apps` is renamed, change `CMS_APP` to match. Until then the check stops running, and the restore check line drops out of the report.
+- A second app with a database gets no restore check until the runner learns its format too.
 
 ### Where backups go
 
