@@ -337,4 +337,72 @@ EOF
   messages alerts | grep -q "Media copy of \*\*test-media\*\* failed: still running after 1h" || fail "unexpected alert: $(messages alerts)"
 }
 
+# --- The weekly restore check ---------------------------------------------------------
+# 2026-10-25 is a Sunday.
+
+test_restore_check_runs_on_sunday_at_the_nightly_hour_and_is_in_that_days_report() {
+  have_docker || return 0
+  remove_check_on_exit
+  cms_backup_with_counts 'pages\t1\n'
+  run_at 2026-10-24T07:00:00Z
+  messages report | grep -Eq '^restore check +not run yet$' || fail "Saturday's report: $(messages report)" || return 1
+  run_at 2026-10-25T06:00:00Z
+  grep -q "Restore check passed" "$T/runner/logs/runner.log" && fail "checked before the nightly hour" && return 1
+  run_at 2026-10-25T07:00:00Z
+  grep -q "Restore check passed: 2026-10-25T070000Z-payload.tar.age" "$T/runner/logs/runner.log" \
+    || fail "Sunday's backup was not checked" || return 1
+  messages report | grep -Eq '^restore check +passed 2026-10-25 07:00$' || fail "Sunday's report: $(messages report)" || return 1
+  assert_eq "$(message_count alerts)" 0 "alerts" || return 1
+  ! check_container_exists || fail "the container is still there"
+}
+
+test_failed_restore_check_alerts_naming_the_step_and_the_report_says_failed() {
+  # Its recipe writes a text file, not a CMS backup, so the check fails before it needs
+  # Docker.
+  app_working payload
+  run_at 2026-10-25T07:00:00Z
+  assert_eq "$(message_count alerts)" 1 "alerts" || return 1
+  messages alerts | grep -q "Weekly restore check of the newest CMS backup failed" || fail "unexpected alert: $(messages alerts)" || return 1
+  messages alerts | grep -q "Failed at unpack" || fail "the alert does not name the step: $(messages alerts)" || return 1
+  messages report | grep -Eq '^restore check +failed 2026-10-25 07:00$' || fail "report: $(messages report)"
+}
+
+test_restore_check_missed_on_sunday_is_made_up_a_week_after_the_last() {
+  app_working payload
+  # Not on the runner's first run: a week from then, or the next Sunday, whichever is first.
+  run_at 2026-10-19T07:00:00Z
+  assert_eq "$(message_count alerts)" 0 "alerts on Monday" || return 1
+  # The VPS was down on Sunday the 25th at 07:00; it is back on Monday the 26th.
+  run_at 2026-10-26T07:00:00Z
+  assert_eq "$(message_count alerts)" 1 "alerts after the missed Sunday" || return 1
+  run_at 2026-10-26T08:00:00Z
+  run_at 2026-10-27T07:00:00Z
+  assert_eq "$(message_count alerts)" 1 "alerts the days after" || return 1
+}
+
+test_restore_check_that_times_out_says_so() {
+  app_working payload
+  # A timeout that stops the check at once, as the real one would after 30 minutes.
+  local real
+  real="$(command -v timeout)"
+  mkdir -p "$T/runner/bin"
+  cat > "$T/runner/bin/timeout" <<EOF
+#!/usr/bin/env bash
+[[ "\$2 \$3" == "bash "*/backups.sh ]] && exit 124
+exec "$real" "\$@"
+EOF
+  chmod +x "$T/runner/bin/timeout"
+  run_at 2026-10-25T07:00:00Z
+  assert_eq "$(message_count alerts)" 1 "alerts" || return 1
+  messages alerts | grep -q "still running after 30m" || fail "unexpected alert: $(messages alerts)"
+}
+
+test_no_restore_check_without_a_cms_on_the_box() {
+  app_working cms
+  run_at 2026-10-25T07:00:00Z
+  grep -qi "restore check" "$T/runner/logs/runner.log" && fail "it ran a restore check" && return 1
+  messages report | grep -qi "restore check" && fail "the report has a restore check line: $(messages report)" && return 1
+  return 0
+}
+
 run_tests "$@"

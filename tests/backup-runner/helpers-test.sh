@@ -374,39 +374,12 @@ test_media_get_of_a_file_not_in_the_copy_says_so() {
 # scratch database on the same machine.
 export BACKUP_SCRATCH_CONTAINER=backups-scratch-cms-test BACKUP_SCRATCH_PORT=25432
 
-# Whether Docker is usable here; the scratch CMS tests pass trivially without it.
-have_docker() {
-  docker info > /dev/null 2>&1 && return 0
-  echo "    skipped: no Docker"
-  return 1
-}
-
 # Runs SQL in the scratch database and prints the result, one row per line.
 scratch_sql() { docker exec "$BACKUP_SCRATCH_CONTAINER" psql -U postgres -tAc "$1" payload; }
 
-# A fake CMS whose recipe writes the given file as its backup.
-cms_backing_up() {
-  mkdir -p "$T/apps/payload"
-  cp "$1" "$T/fake-backup-file"
-  echo "cp \"$T/fake-backup-file\" \"\$1/$(basename "$1")\"" > "$T/apps/payload/backup.sh"
-  touch "$T/apps/payload/restore.sh"
-}
-
-# Makes a pg_dump custom-format dump of a small CMS-like database with Postgres 17 itself,
-# at the given path. Its table is owned by a "payload" role, as the live CMS's tables are;
-# the scratch database has no such role, so the load must leave ownership out.
-make_cms_dump() {
-  local maker="$BACKUP_SCRATCH_CONTAINER-maker"
-  docker run -d --name "$maker" -e POSTGRES_PASSWORD=x -e POSTGRES_DB=payload postgres:17 > /dev/null
-  until docker exec "$maker" pg_isready -h 127.0.0.1 -U postgres -q; do sleep 1; done
-  docker exec "$maker" psql -q -U postgres -d payload -c "CREATE ROLE payload; CREATE TABLE pages (slug text); INSERT INTO pages VALUES ('sops'); ALTER TABLE pages OWNER TO payload;"
-  docker exec "$maker" pg_dump -U postgres -Fc payload > "$1"
-  docker rm -f -v "$maker" > /dev/null
-}
-
 # Removes the scratch containers when a test ends, however it ends.
 remove_scratch_on_exit() {
-  trap 'docker rm -f -v "$BACKUP_SCRATCH_CONTAINER" "$BACKUP_SCRATCH_CONTAINER-maker" > /dev/null 2>&1' EXIT
+  trap 'docker rm -f -v "$BACKUP_SCRATCH_CONTAINER" "$DUMP_MAKER" > /dev/null 2>&1' EXIT
 }
 
 test_scratch_cms_loads_the_cms_recipes_tar_and_is_removed_on_request() {
@@ -474,26 +447,7 @@ test_scratch_cms_of_a_backup_with_no_dump_says_so() {
 }
 
 # --- The restore check ---------------------------------------------------------------
-
-export BACKUP_RESTORE_CHECK_CONTAINER=backups-restore-check-test
-
-# Whether the restore check's container exists, running or not.
-check_container_exists() { [ -n "$(docker ps -aq -f name="^$BACKUP_RESTORE_CHECK_CONTAINER\$")" ]; }
-
-# Removes the restore check's containers when a test ends, however it ends.
-remove_check_on_exit() {
-  trap 'docker rm -f -v "$BACKUP_RESTORE_CHECK_CONTAINER" "$BACKUP_SCRATCH_CONTAINER-maker" > /dev/null 2>&1' EXIT
-}
-
-# A CMS backup as payload's recipe writes it, payload.tar, holding a dump of one table,
-# pages, with one row, and the given row counts (printf text: "table\trows\n" lines).
-cms_backup_with_counts() {
-  mkdir "$T/pack"
-  make_cms_dump "$T/pack/payload.dump"
-  printf "$1" > "$T/pack/row-counts.tsv"
-  tar -cf "$T/payload.tar" -C "$T/pack" payload.dump row-counts.tsv
-  cms_backing_up "$T/payload.tar"
-}
+# Its fake CMS backups and container helpers are in fake-vps.sh, shared with test.sh.
 
 test_restore_check_passes_on_a_good_backup_and_removes_its_container() {
   have_docker || return 0

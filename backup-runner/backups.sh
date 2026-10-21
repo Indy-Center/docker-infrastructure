@@ -289,7 +289,6 @@ cmd_restore() {
 # A throwaway Postgres 17 (the CMS's version) loaded from a CMS backup, beside the live
 # CMS and never touching it: to look at old data, or copy something out of it.
 
-CMS_APP=payload
 SCRATCH_CONTAINER="${BACKUP_SCRATCH_CONTAINER:-backups-scratch-cms}"
 # Published on the VPS's loopback address only, for an SSH tunnel from a laptop.
 SCRATCH_PORT="${BACKUP_SCRATCH_PORT:-15432}"

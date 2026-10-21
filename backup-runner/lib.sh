@@ -38,6 +38,9 @@ RUN_HOUR=$(( $(date -u -d "$NOW" +%s) / 3600 ))  # hours since 1970, for "how lo
 # The bucket's top-level folders that hold app backups (media/ is the media copy's).
 TIERS="frequent daily monthly"
 
+# The CMS's app name, for the restore check and the scratch database.
+CMS_APP=payload
+
 # --- Log -----------------------------------------------------------------------------
 # Everything the runner and the recipes print goes to logs/runner.log. Once it passes
 # 5 MB it becomes runner.log.1 (replacing the older one), so the log never tops 10 MB.
