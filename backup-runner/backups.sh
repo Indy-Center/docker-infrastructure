@@ -56,7 +56,9 @@ lock_and_log() {
   fi
   # Only once the lock is held, so the runner is not rotating the log at the same time.
   rotate_log
-  exec > >(tee -a "$LOG") 2>&1
+  # tee closes the lock: it can outlive this command (fed by anything restore.sh left
+  # running), and must not hold up the hourly runs while it does.
+  exec > >(tee -a "$LOG" 9>&-) 2>&1
   log "backups $*, run by hand"
 }
 

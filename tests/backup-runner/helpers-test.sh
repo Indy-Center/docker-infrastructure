@@ -269,6 +269,19 @@ test_restore_waiting_at_its_question_does_not_hold_up_the_hourly_run() {
   assert_eq "$(cat "$T/restore-got")" "data of cms"
 }
 
+test_restore_whose_script_leaves_something_running_does_not_hold_up_the_hourly_run() {
+  app_restorable cms
+  run_at 2026-10-20T07:00:00Z
+  # Something restore.sh started is still running, with its output, after restore.sh ends.
+  echo 'sleep 5 &' >> "$T/apps/cms/restore.sh"
+  echo cms | env $(fake_vps_env) bash "$repo/backup-runner/backups.sh" restore cms latest \
+    > "$T/restore.out" 2>&1 || fail "restore failed: $(cat "$T/restore.out")" || return 1
+  run_at 2026-10-21T07:00:00Z
+  grep -q "skipped: the previous run is still running" "$T/runner/logs/runner.log" \
+    && fail "the hourly run stepped aside after the restore had finished" && return 1
+  assert_count daily/cms 2
+}
+
 test_restore_hung_up_at_its_question_leaves_nothing_behind() {
   app_restorable cms
   run_at 2026-10-20T07:00:00Z
