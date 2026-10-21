@@ -100,6 +100,63 @@ copy_media() {
   rm -f "$out"
 }
 
+# --- The weekly restore check --------------------------------------------------------
+# Every Sunday, in the nightly run after the backups, `backups restore-check` loads the
+# newest CMS backup into a throwaway Postgres and checks its tables and row counts
+# (backups.sh, "The restore check"). Only on a box that runs the CMS.
+
+# Sunday, as `date +%u` numbers the days.
+RESTORE_CHECK_DAY=7
+# Like a recipe's time limit (lib.sh). Loading today's CMS takes well under a minute.
+RESTORE_CHECK_TIMEOUT=30m
+
+# Whether this box runs the CMS, so has a CMS backup to check.
+has_cms() { [ -f "$APPS_DIR/$CMS_APP/backup.sh" ]; }
+
+# Whether the check is due: on Sunday at the nightly hour, or a week after the last check
+# if a Sunday was missed.
+restore_check_due() {
+  local last
+  last="$(cat "$STATE/restore-check.last-run")"
+  (( HOUR == NIGHTLY_HOUR && $(date -u -d "$NOW" +%u) == RESTORE_CHECK_DAY )) && return 0
+  (( RUN_HOUR - last >= 7 * 24 ))
+}
+
+# Runs the check, keeps its result for the report, and alerts if it fails. A check that
+# times out shows as failed in the report, without an alert. The check removes its
+# container however it ends, a timeout included: timeout stops it with TERM, which it
+# traps, and KILLs it a minute later if it is still going. A container left by that is
+# removed by the next check before it starts its own.
+run_restore_check() {
+  local out="$STAGING_DIR/restore-check.log" status when
+  when="$(date -u -d "$NOW" '+%Y-%m-%d %H:%M')"
+  log "restore check of the newest $CMS_APP backup"
+  mkdir -p "$STAGING_DIR"
+  # This run holds the run lock, so the check must not wait for it.
+  BACKUP_RUN_LOCK_HELD=yes timeout -k 1m "$RESTORE_CHECK_TIMEOUT" \
+    bash "$RUNNER_DIR/backups.sh" restore-check > "$out" 2>&1 9>&- < /dev/null
+  status=$?
+  cat "$out"
+  if [ "$status" = 0 ]; then
+    echo "passed $when" > "$STATE/restore-check"
+  # timeout exits 124 when it stops the check, 137 when it has to kill it.
+  elif [ "$status" = 124 ] || [ "$status" = 137 ]; then
+    echo "failed $when" > "$STATE/restore-check"
+    log "restore check still running after $RESTORE_CHECK_TIMEOUT, so it was stopped"
+  else
+    echo "failed $when" > "$STATE/restore-check"
+    local detail
+    # From the line naming the step that failed (backups.sh's die), or the last lines.
+    detail="$(sed -n '/^Failed at /,$p' "$out" | head -n 15)"
+    [ -n "$detail" ] || detail="$(tail -n 10 "$out")"
+    alert "Weekly restore check of the newest CMS backup failed, so it may not restore. \`backups restore-check\` runs it again.
+\`\`\`
+$detail
+\`\`\`"
+  fi
+  rm -f "$out"
+}
+
 # --- Results and the daily report ----------------------------------------------------
 # Each app's latest result (backed up, failed, no data, no recipe) is kept in
 # state/<app>, for the report. Last-good times and sizes come from the bucket itself, so
@@ -168,11 +225,16 @@ send_report() {
       media+="$(printf '%-28s %s' "media/$bucket" "size unknown: rclone size failed")"$'\n'
     fi
   done
+  # The last weekly restore check, on a box that runs the CMS.
+  local check=""
+  if has_cms; then
+    check="$(printf '%-28s %s' "restore check" "$(cat "$STATE/restore-check" 2>/dev/null || echo "not run yet")")"$'\n'
+  fi
   post_discord report-webhook.url "**Backups for $DAY** (times UTC)
 \`\`\`
 $(printf '%-16s %-10s %-17s %s' app result "last good" space)
 ${rows}total space: $(human "$total")
-${media}\`\`\`${notes:+$'\n'$notes}"
+${media}${check}\`\`\`${notes:+$'\n'$notes}"
   log "report sent"
 }
 
@@ -228,6 +290,17 @@ if (( HOUR == NIGHTLY_HOUR || RUN_HOUR - last_media_copy > 24 )); then
   for bucket in $buckets; do
     copy_media "$bucket"
   done
+fi
+
+# Weekly, after the backups and before the report, so that day's report shows it. A
+# runner's first run counts as its last check, so a new box waits for Sunday rather than
+# checking a backup it has only just taken.
+if has_cms; then
+  [ -f "$STATE/restore-check.last-run" ] || echo "$RUN_HOUR" > "$STATE/restore-check.last-run"
+  if restore_check_due; then
+    echo "$RUN_HOUR" > "$STATE/restore-check.last-run"
+    run_restore_check
+  fi
 fi
 
 # Once a day, after the nightly backups: the report, then the status page's ping. If the

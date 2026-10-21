@@ -38,6 +38,9 @@ RUN_HOUR=$(( $(date -u -d "$NOW" +%s) / 3600 ))  # hours since 1970, for "how lo
 # The bucket's top-level folders that hold app backups (media/ is the media copy's).
 TIERS="frequent daily monthly"
 
+# The CMS's app name, for the restore check and the scratch database.
+CMS_APP=payload
+
 # --- Log -----------------------------------------------------------------------------
 # Everything the runner and the recipes print goes to logs/runner.log. Once it passes
 # 5 MB it becomes runner.log.1 (replacing the older one), so the log never tops 10 MB.
@@ -204,3 +207,36 @@ fail_app() {
 
 # Bytes as people read them: 1536 becomes 1.5KiB.
 human() { numfmt --to=iec-i --suffix=B "${1:-0}"; }
+
+# --- Throwaway Postgres --------------------------------------------------------------
+# A Postgres 17 (the CMS's version) to load a CMS backup into, for backups.sh's restore
+# check and scratch database, and for the tests' fake CMS dumps.
+
+# A new random password for a throwaway database.
+new_password() { tr -dc a-z0-9 < /dev/urandom | head -c 20; }
+
+# Starts a throwaway Postgres 17 with an empty database "payload", and waits until it
+# answers. Any further arguments are docker run options, such as a published port. If it
+# fails, it prints why and returns 1.
+#   why="$(start_postgres <container> <password> [docker run options…])" || …
+start_postgres() {
+  local name="$1" password="$2"
+  shift 2
+  docker run -d --name "$name" -e POSTGRES_PASSWORD="$password" -e POSTGRES_DB=payload \
+    "$@" postgres:17 > /dev/null || { echo "docker run failed (its error is above)."; return 1; }
+  # Ready once it answers over TCP: while it sets itself up it listens on a socket only.
+  local tries=0
+  until docker exec "$name" pg_isready -h 127.0.0.1 -U postgres -q; do
+    (( ++tries < 60 )) || { echo "Postgres did not answer within a minute."; return 1; }
+    sleep 1
+  done
+}
+
+# Loads a dump into a throwaway Postgres's "payload" database with pg_restore, over
+# stdin, so nothing needs copying into the container. Ownership and grants are left out:
+# the dump's tables belong to the live CMS's "payload" role, and the throwaway database
+# has only the postgres user. Returns pg_restore's exit status.
+#   load_dump <container> <dump>
+load_dump() {
+  docker exec -i "$1" pg_restore -U postgres -d payload --no-owner --no-privileges < "$2"
+}

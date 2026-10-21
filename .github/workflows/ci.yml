@@ -63,11 +63,15 @@ jobs:
           bash backup-runner/install-tools.sh "$HOME/backup-runner-bin"
           echo "$HOME/backup-runner-bin" >> "$GITHUB_PATH"
 
+      # The weekly restore check's tests load a real dump into Postgres 17, with the
+      # runner's Docker.
       - name: Runner tests
         run: bash tests/backup-runner/test.sh
 
-      # The helper commands (backups.sh), on the same fake VPS. The scratch CMS tests use
-      # the runner's Docker and a real Postgres 17.
+      # The helper commands (backups.sh), on the same fake VPS. The scratch CMS and restore
+      # check tests use the runner's Docker and a real Postgres 17: the restore check is
+      # checked to pass on a known-good dump, and to fail on a corrupt one and on one
+      # missing a table.
       - name: Helper command tests
         run: bash tests/backup-runner/helpers-test.sh
 
