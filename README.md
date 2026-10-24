@@ -258,7 +258,7 @@ It runs on every push to `main`, and by hand from **Actions → Build and Deploy
 
 Organization secrets and variables (**Org Settings → Secrets and variables → Actions**), the same four for each server, named with its prefix. Access to each is limited to **Selected repositories**: this one, plus each app repository that runs on that server. Each deploy key can do anything `deploy` can on its server, and `deploy` is in the docker group.
 
-`vanderbilt` is the DigitalOcean droplet, which runs every app until they move. `alexandria` is the new server, a Hostinger VPS at `alexandria.flyzd.org`.
+`vanderbilt` is the DigitalOcean droplet, which runs every app until they move. `alexandria` is the new server, a Hostinger VPS at `alexandria.flyzid.org`.
 
 | Name | Kind | Value |
 | ---- | ---- | ----- |
