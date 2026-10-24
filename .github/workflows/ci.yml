@@ -85,3 +85,26 @@ jobs:
           bash backup-runner/install-cron.sh
           crontab -l
           [ "$(crontab -l | grep -c '# backup-runner$')" = 1 ]
+
+  # The server's base setup (host/). Nothing here touches the runner's own system: apply.sh
+  # runs against a fake root, and bootstrap.sh in a container. See tests/host/.
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The real sshd, so `sshd -t` really checks the config apply.sh writes.
+      - name: Install sshd
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q openssh-server
+          sudo mkdir -p /run/sshd
+
+      - name: apply.sh against a fake root
+        run: bash tests/host/test.sh
+
+      - name: bootstrap.sh in an ubuntu:24.04 container
+        run: bash tests/host/bootstrap-test.sh
+
+      - name: The deploy ships host/ and never runs it
+        run: bash tests/host/deploy-test.sh
