@@ -23,8 +23,7 @@ jobs:
         # Every server this repository deploys to, by the prefix of its four org settings
         # (VANDERBILT_HOST and so on; see the README). Add or drop a server here. The
         # runner's server name, in its report and alerts, is the prefix in lower case.
-        # <NEW> stands for the new server until ticket 18 names it.
-        server: [VANDERBILT, "<NEW>"]
+        server: [VANDERBILT, ALEXANDRIA]
     concurrency:
       group: deploy-${{ matrix.server }}
       cancel-in-progress: false

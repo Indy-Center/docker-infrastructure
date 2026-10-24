@@ -258,7 +258,7 @@ It runs on every push to `main`, and by hand from **Actions → Build and Deploy
 
 Organization secrets and variables (**Org Settings → Secrets and variables → Actions**), the same four for each server, named with its prefix. Access to each is limited to **Selected repositories**: this one, plus each app repository that runs on that server. Each deploy key can do anything `deploy` can on its server, and `deploy` is in the docker group.
 
-`vanderbilt` is the DigitalOcean droplet, which runs every app until they move. `<NEW>` stands for the new server until it is named.
+`vanderbilt` is the DigitalOcean droplet, which runs every app until they move. `alexandria` is the new server, a Hostinger VPS at `alexandria.flyzd.org`.
 
 | Name | Kind | Value |
 | ---- | ---- | ----- |
@@ -266,10 +266,10 @@ Organization secrets and variables (**Org Settings → Secrets and variables →
 | `VANDERBILT_DEPLOY_USER` | variable | `deploy` |
 | `VANDERBILT_DEPLOY_SSH_KEY` | secret | Private key of the droplet's deploy user's key pair |
 | `VANDERBILT_KNOWN_HOSTS` | secret | The droplet's SSH host key line(s), so the runner can check it's talking to the real server |
-| `<NEW>_HOST` | variable | The new server's hostname or IP |
-| `<NEW>_DEPLOY_USER` | variable | `deploy` |
-| `<NEW>_DEPLOY_SSH_KEY` | secret | Private key of the new server's deploy user's key pair |
-| `<NEW>_KNOWN_HOSTS` | secret | The new server's SSH host key line(s) |
+| `ALEXANDRIA_HOST` | variable | The new server's hostname or IP |
+| `ALEXANDRIA_DEPLOY_USER` | variable | `deploy` |
+| `ALEXANDRIA_DEPLOY_SSH_KEY` | secret | Private key of the new server's deploy user's key pair |
+| `ALEXANDRIA_KNOWN_HOSTS` | secret | The new server's SSH host key line(s) |
 
 Repository secrets and variables (**Settings → Secrets and variables → Actions**), used only by this repository's deploy:
 
