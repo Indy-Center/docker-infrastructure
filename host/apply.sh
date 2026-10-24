@@ -195,7 +195,8 @@ while read -r f; do
   esac
 done <<< "$managed"
 
-# sshd drop-ins host/ doesn't manage, such as the image's own. They aren't differences:
+# sshd drop-ins host/ doesn't manage, such as the image's own. They're `extra` lines, not
+# differences:
 # ours sorts first and sshd keeps the first value it reads, so they can't undo it. Each
 # is listed so a reader of the folder isn't misled, saying if it tries to.
 if $check; then
@@ -207,6 +208,17 @@ if $check; then
       grep -viE 'PermitRootLogin[[:space:]]+no' | awk '{print $1 " " $2}' | paste -sd, - | sed 's/,/, /g')"
     echo "extra    $f  (not in host/${tries:+; sets $tries, which ours overrides})"
   done
+
+  # Likewise any sudoers drop-in, such as cloud-init's 90-cloud-init-users (bootstrap.sh
+  # removes that one). host/ manages none. The folder is root's alone.
+  if [ -r "$root/etc/sudoers.d" ] && [ -x "$root/etc/sudoers.d" ]; then
+    for f in "$root"/etc/sudoers.d/*; do
+      if [ ! -e "$f" ] || [ "${f##*/}" = README ]; then continue; fi
+      echo "extra    ${f#"$root"}  (not in host/; it can grant sudo)"
+    done
+  elif [ -d "$root/etc/sudoers.d" ]; then
+    echo "extra    /etc/sudoers.d/  (can't list it as $(id -un); run --check with sudo to see any files there)"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

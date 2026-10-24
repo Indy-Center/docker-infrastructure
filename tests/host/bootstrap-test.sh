@@ -24,7 +24,7 @@ build_image() {
   fi
   docker build -q -t "$IMAGE" - > /dev/null <<'EOF' || exit 1
 FROM ubuntu:26.04
-RUN apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends openssh-server && mkdir -p /run/sshd
+RUN apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends openssh-server sudo && mkdir -p /run/sshd
 EOF
 }
 
@@ -108,6 +108,27 @@ test_bootstrap_removes_the_interim_sshd_drop_in() {
   [ ! -e /etc/ssh/sshd_config.d/01-interim.conf ] || fail "the interim drop-in is still there" || return 1
   grep -q 'removed /etc/ssh/sshd_config.d/01-interim.conf' /out || fail "it didn't say so" || return 1
   [ "$(grep -c '^systemctl try-reload-or-restart ssh$' /calls)" = 2 ] || fail "ssh wasn't reloaded after removing it: $(cat /calls)"
+}
+
+test_bootstrap_removes_cloud_inits_sudoers_file() {
+  printf '# Created by cloud-init\nubuntu ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/90-cloud-init-users
+  chmod 440 /etc/sudoers.d/90-cloud-init-users
+  bootstrap
+  assert_eq "$(cat /rc)" 0 || return 1
+  [ ! -e /etc/sudoers.d/90-cloud-init-users ] || fail "cloud-init's sudoers file is still there" || return 1
+  grep -q 'removed /etc/sudoers.d/90-cloud-init-users' /out || fail "it didn't say so" || return 1
+  [ -e /etc/sudoers.d/README ] || fail "sudo's README went too" || return 1
+  visudo -c -q || fail "visudo -c fails afterwards"
+}
+
+test_a_broken_sudoers_is_caught_by_visudo() {
+  printf 'ubuntu ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/90-cloud-init-users
+  echo "this is not sudoers syntax" > /etc/sudoers.d/50-broken
+  chmod 440 /etc/sudoers.d/90-cloud-init-users /etc/sudoers.d/50-broken
+  bootstrap
+  assert_eq "$(cat /rc)" 1 || return 1
+  grep -q 'visudo -c fails' /out || fail "no reason given" || return 1
+  ! grep -q '^apt-get install' /calls || fail "it carried on to apply.sh"
 }
 
 test_bootstrap_run_twice_changes_nothing() {

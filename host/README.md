@@ -83,7 +83,10 @@ You must already be in `AllowUsers` in `files/etc/ssh/sshd_config.d/00-indy-cent
 it stops before changing anything if you aren't. It first runs `apt-get update` and
 `upgrade`, since an image's package lists can be weeks old. It asks for your password, which `sudo`
 asks for later. `deploy`'s key line gets `restrict`: no forwarding, no terminal, no
-`~/.ssh/rc`, none of which the deploy's commands and rsync need. Once `apply.sh` has
+`~/.ssh/rc`, none of which the deploy's commands and rsync need. It removes cloud-init's
+`/etc/sudoers.d/90-cloud-init-users`, which grants passwordless sudo to an `ubuntu` user
+the image doesn't have (any `ubuntu` account made later would get root), then checks the
+sudoers files with `visudo -c` and stops if they fail. Once `apply.sh` has
 finished, it removes `/etc/ssh/sshd_config.d/01-interim.conf`, if an admin put one there to
 turn password login off until bootstrap ran. Run again, it changes only what isn't right
 yet.
@@ -121,7 +124,10 @@ to Docker (or with Docker down), and `/home/deploy`'s folders from an admin's ac
 It also prints an `extra` line for each sshd drop-in that isn't in `files/`, such as the
 image's own `50-cloud-init.conf`, saying if it sets `PasswordAuthentication yes` or lets
 root log in. These aren't differences: `00-indy-center.conf` sorts first, and sshd keeps
-the first value it reads, so they can't undo it.
+the first value it reads, so they can't undo it. Likewise for each file in
+`/etc/sudoers.d/` apart from sudo's `README`: `host/` manages none, so any there was added
+by hand or by the image. That folder is root's alone, so without `sudo` it says it can't
+list it.
 
 To upgrade Docker (about every quarter, at a quiet time):
 

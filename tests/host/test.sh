@@ -394,6 +394,27 @@ test_check_lists_sshd_drop_ins_it_does_not_manage_without_counting_them() {
   assert_out_lacks "^extra    $SSHD_DROPIN"
 }
 
+# --- sudoers -------------------------------------------------------------------------------
+
+test_check_lists_sudoers_files_apart_from_readme() {
+  mkdir -p "$R/etc/sudoers.d"
+  echo "# sudo's own README" > "$R/etc/sudoers.d/README"
+  echo "ubuntu ALL=(ALL) NOPASSWD:ALL" > "$R/etc/sudoers.d/90-cloud-init-users"
+  apply
+  apply --check
+  assert_eq "$(rc)" 0 "they aren't differences" || return 1
+  assert_out_has '^extra    /etc/sudoers.d/90-cloud-init-users  \(not in host/; it can grant sudo\)$' || return 1
+  assert_out_lacks 'sudoers.d/README'
+}
+
+test_check_says_when_it_cannot_list_sudoers() {
+  mkdir -p "$R/etc/sudoers.d"
+  chmod 000 "$R/etc/sudoers.d"
+  apply --check
+  chmod 755 "$R/etc/sudoers.d"
+  assert_out_has "^extra    /etc/sudoers.d/  \(can't list it"
+}
+
 # ---------------------------------------------------------------------------
 
 run_tests "$@"

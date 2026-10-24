@@ -8,13 +8,17 @@
 # It upgrades the image's packages, creates the first admin (in sudo, with a password it
 # asks for) and deploy (whose key line gets `restrict`), sets the hostname, runs apply.sh
 # for everything else, then adds deploy to the docker group and removes the interim sshd
-# drop-in from before it ran. It is safe to run again: what is already right is left
+# drop-in from before it ran. It also removes cloud-init's sudoers file, checking the
+# rest with visudo -c. It is safe to run again: what is already right is left
 # alone. The admin must already be in AllowUsers in host/'s sshd drop-in.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # What an admin set by hand at first login to close password login until this ran.
 INTERIM_DROPIN=/etc/ssh/sshd_config.d/01-interim.conf
+# cloud-init's grant of passwordless sudo to an `ubuntu` user the image doesn't have. It
+# does nothing today, but would give root to any `ubuntu` account made later.
+CLOUD_INIT_SUDOERS=/etc/sudoers.d/90-cloud-init-users
 
 die() {
   echo "bootstrap.sh: $*" >&2
@@ -121,6 +125,11 @@ ensure_key "$admin" "$admin_key"
 
 ensure_user deploy
 ensure_key deploy "restrict $deploy_key"
+
+if [ -e "$CLOUD_INIT_SUDOERS" ]; then
+  rm -f "$CLOUD_INIT_SUDOERS" && echo "removed $CLOUD_INIT_SUDOERS (cloud-init's sudo grant)"
+  visudo -c -q || die "visudo -c fails after removing $CLOUD_INIT_SUDOERS; fix the sudoers files before anything else"
+fi
 
 # ---------------------------------------------------------------------------
 # Hostname
