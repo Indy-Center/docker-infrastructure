@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+# Makes this server's base system match host/: the files under host/files/ copied to the
+# same paths, plus Docker from its apt repository (held), the swapfile, UTC, the
+# /home/deploy layout and the traefik-shared network. Safe to run again: it changes only
+# what differs, and reloads only the services whose config changed.
+#
+#   sudo bash /home/deploy/host/apply.sh --check   # print each difference; changes nothing
+#   sudo bash /home/deploy/host/apply.sh           # apply them
+#
+# --check needs no root (the runner runs it too). It exits 0 when the server matches,
+# 1 when anything differs. Without --check it exits non-zero if anything was refused or
+# failed, after doing the rest. See host/README.md, and decision 0008 in the notes for why.
+#
+# HOST_ROOT=<folder> runs it against a fake server root instead of /, for the tests.
+set -uo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="${HOST_ROOT:-}"
+PATH="$PATH:/usr/sbin:/sbin"
+
+DOCKER_PACKAGES=(docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin)
+SWAPFILE_SIZE=4G
+SWAPFILE_BYTES=4294967296
+TIMEZONE=/usr/share/zoneinfo/Etc/UTC
+DEPLOY_DIRS=(traefik apps backup-runner backups)
+NETWORK=traefik-shared
+
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+
+check=false
+case "${1:-}" in
+  "") ;;
+  --check) check=true ;;
+  -h | --help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+if ! $check && [ -z "$root" ] && [ "$(id -u)" != 0 ]; then
+  echo "apply.sh: changing the server needs root. Run it with sudo, or use --check." >&2
+  exit 1
+fi
+
+differences=0 # in --check
+changes=0     # without --check
+failed=0
+changed=" "   # the managed files this run changed, space-separated
+
+# differs WHAT [WHY]: one difference, in --check.
+differs() {
+  differences=$((differences + 1))
+  echo "differs  $1${2:+  ($2)}"
+}
+# did WHAT: one change made.
+did() {
+  changes=$((changes + 1))
+  echo "changed  $*"
+}
+# refuse WHAT WHY: something not done, so the run ends non-zero.
+refuse() {
+  failed=1
+  echo "refused  $1: $2"
+}
+was_changed() { [[ $changed == *" $1 "* ]]; }
+
+# ---------------------------------------------------------------------------
+# The managed files
+# ---------------------------------------------------------------------------
+
+install_file() {
+  install -D -m 644 "$here/files$1" "$root$1" && did "$1" && changed+="$1 "
+}
+
+# The admin running this: bootstrap.sh names the first admin in HOST_ADMIN, and sudo
+# names the account it was run from.
+admin="${HOST_ADMIN:-${SUDO_USER:-}}"
+[ "$admin" = root ] && admin=""
+
+# Why the sshd config now in place could lock someone out, or nothing if it can't.
+sshd_lockout() {
+  local config="$root/etc/ssh/sshd_config" effective
+  sshd -t -f "$config" 2>&1 | sed 's/^/    /' >&2
+  [ "${PIPESTATUS[0]}" = 0 ] || { echo "sshd -t rejects it"; return; }
+  effective="$(sshd -T -f "$config" 2> /dev/null)"
+  allowed() { grep -qxi "allowusers $1" <<< "$effective"; }
+  allowed deploy || { echo "deploy is not in AllowUsers, so every deploy would fail"; return; }
+  [ -n "$admin" ] || {
+    echo "can't tell which admin is running this; run it with sudo from your own account"
+    return
+  }
+  allowed "$admin" || { echo "$admin, who is running this, is not in its AllowUsers"; return; }
+  if grep -qxi 'passwordauthentication no' <<< "$effective" &&
+    ! grep -qE '^(ssh|ecdsa|sk-)' "$root/home/$admin/.ssh/authorized_keys" 2> /dev/null; then
+    echo "$admin, who is running this, has no SSH key in ~/.ssh/authorized_keys, and it turns off password login"
+  fi
+}
+
+# The sshd drop-in. It goes in place, then sshd checks the whole config; anything that
+# could lock an admin or deploy out puts the old version back.
+install_sshd_file() {
+  local f="$1" dest="$root$1" backup="" why
+  if [ -e "$dest" ]; then backup="$(mktemp)" && cp -p "$dest" "$backup"; fi
+  install -D -m 644 "$here/files$f" "$dest" || return
+  why="$(sshd_lockout)"
+  if [ -n "$why" ]; then
+    if [ -n "$backup" ]; then mv "$backup" "$dest"; else rm -f "$dest"; fi
+    refuse "$f" "$why. The old version stays"
+    return
+  fi
+  rm -f "$backup"
+  did "$f"
+  changed+="$f "
+}
+
+while read -r f; do
+  src="$here/files$f"
+  dest="$root$f"
+  cmp -s "$src" "$dest" && continue
+  if $check; then
+    if [ ! -e "$dest" ]; then
+      differs "$f" "missing"
+    elif [ ! -r "$dest" ]; then
+      differs "$f" "can't read it to compare; run --check with sudo"
+    else
+      differs "$f" "changed"
+      diff -u --label "$f (on the server)" --label "$f (in host/)" "$dest" "$src" | sed 's/^/    /'
+    fi
+    continue
+  fi
+  case "$f" in
+    /etc/ssh/sshd_config.d/*) install_sshd_file "$f" ;;
+    *) install_file "$f" ;;
+  esac
+done < <(cd "$here/files" && find . -type f | sed 's|^\.||' | sort)
+
+# ---------------------------------------------------------------------------
+# Packages: Docker from its repository, held, and unattended-upgrades
+# ---------------------------------------------------------------------------
+
+installed() { dpkg-query -W -f='${Status}' "$1" 2> /dev/null | grep -q 'install ok installed'; }
+
+docker_was_installed=false
+installed docker-ce && docker_was_installed=true
+
+for list in docker unattended; do
+  if [ $list = docker ]; then packages=("${DOCKER_PACKAGES[@]}"); else packages=(unattended-upgrades); fi
+  missing=()
+  for p in "${packages[@]}"; do installed "$p" || missing+=("$p"); done
+  [ ${#missing[@]} = 0 ] && continue
+  if $check; then
+    for p in "${missing[@]}"; do differs "package $p" "not installed"; done
+    continue
+  fi
+  if DEBIAN_FRONTEND=noninteractive apt-get update -q &&
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"; then
+    did "installed ${missing[*]}"
+  else
+    refuse "packages ${missing[*]}" "apt-get failed"
+  fi
+done
+
+held="$(apt-mark showhold 2> /dev/null)"
+unheld=()
+for p in "${DOCKER_PACKAGES[@]}"; do
+  grep -qxF "$p" <<< "$held" || unheld+=("$p")
+done
+if [ ${#unheld[@]} != 0 ]; then
+  if $check; then
+    for p in "${unheld[@]}"; do differs "package $p" "not held"; done
+  elif apt-mark hold "${unheld[@]}" > /dev/null; then
+    did "held ${unheld[*]}"
+  else
+    refuse "holding ${unheld[*]}" "apt-mark failed"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Reload what changed
+# ---------------------------------------------------------------------------
+
+if ! $check; then
+  if was_changed /etc/ssh/sshd_config.d/00-indy-center.conf; then
+    # try-: Ubuntu 24.04 starts sshd from a socket, so it may not be running. A new
+    # connection reads the new config either way.
+    systemctl try-reload-or-restart ssh && echo "reloaded ssh"
+  fi
+  # A fresh install already started Docker with daemon.json. live-restore keeps
+  # containers running through a restart, once it is on.
+  if was_changed /etc/docker/daemon.json && $docker_was_installed; then
+    systemctl restart docker && echo "restarted docker"
+  fi
+  if was_changed /etc/systemd/journald.conf.d/00-indy-center.conf; then
+    systemctl restart systemd-journald && echo "restarted systemd-journald"
+  fi
+  if was_changed /etc/sysctl.d/60-indy-center.conf; then
+    sysctl -q -p "$root/etc/sysctl.d/60-indy-center.conf" && echo "loaded the sysctl settings"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Timezone
+# ---------------------------------------------------------------------------
+
+if [ "$(readlink "$root/etc/localtime")" != "$TIMEZONE" ]; then
+  if $check; then
+    differs /etc/localtime "not UTC"
+  else
+    ln -sfn "$TIMEZONE" "$root/etc/localtime" && did "/etc/localtime (UTC)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Swap: a 4 GB swapfile, in fstab and on
+# ---------------------------------------------------------------------------
+
+swapfile="$root/swapfile"
+if [ "$(stat -c %s "$swapfile" 2> /dev/null)" != "$SWAPFILE_BYTES" ]; then
+  if $check; then
+    differs /swapfile "missing, or not $SWAPFILE_SIZE"
+  else
+    swapoff "$swapfile" 2> /dev/null
+    rm -f "$swapfile"
+    if fallocate -l "$SWAPFILE_SIZE" "$swapfile" && chmod 600 "$swapfile" && mkswap "$swapfile" > /dev/null; then
+      did "/swapfile ($SWAPFILE_SIZE)"
+    else
+      refuse /swapfile "couldn't create it"
+    fi
+  fi
+elif [ "$(stat -c %a "$swapfile")" != 600 ]; then
+  if $check; then differs /swapfile "not mode 600"; else chmod 600 "$swapfile" && did "/swapfile (mode 600)"; fi
+fi
+
+if ! grep -qE '^/swapfile[[:space:]]+none[[:space:]]+swap[[:space:]]' "$root/etc/fstab" 2> /dev/null; then
+  if $check; then
+    differs /etc/fstab "no /swapfile line"
+  else
+    echo "/swapfile none swap sw 0 0" >> "$root/etc/fstab" && did "/etc/fstab (/swapfile line)"
+  fi
+fi
+
+if ! swapon --show=NAME --noheadings 2> /dev/null | grep -qxF "$swapfile"; then
+  if $check; then
+    differs "swap" "/swapfile is not on"
+  elif [ -f "$swapfile" ]; then
+    swapon "$swapfile" && did "swap on"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# /home/deploy and the traefik-shared network
+# ---------------------------------------------------------------------------
+
+dirs=("$root/home/deploy")
+for d in "${DEPLOY_DIRS[@]}"; do dirs+=("$root/home/deploy/$d"); done
+missing=()
+for d in "${dirs[@]}"; do [ -d "$d" ] || missing+=("${d#"$root"}"); done
+if [ ${#missing[@]} != 0 ]; then
+  if $check; then
+    for d in "${missing[@]}"; do differs "$d" "missing"; done
+  elif mkdir -p "${dirs[@]}" && chown deploy:deploy "${dirs[@]}"; then
+    did "${missing[*]}"
+  else
+    refuse "/home/deploy" "couldn't create its folders"
+  fi
+fi
+
+if docker info > /dev/null 2>&1; then
+  if ! docker network inspect "$NETWORK" > /dev/null 2>&1; then
+    if $check; then
+      differs "Docker network $NETWORK" "missing"
+    elif docker network create "$NETWORK" > /dev/null; then
+      did "Docker network $NETWORK"
+    else
+      refuse "Docker network $NETWORK" "docker network create failed"
+    fi
+  fi
+elif $check; then
+  echo "skipped  Docker network $NETWORK (can't reach Docker as $(id -un); run --check with sudo to include it)"
+else
+  refuse "Docker network $NETWORK" "Docker isn't running"
+fi
+
+# ---------------------------------------------------------------------------
+
+if $check; then
+  if [ "$differences" = 0 ]; then
+    echo "No differences from host/."
+    exit 0
+  fi
+  echo "$differences difference(s) from host/. To apply them: sudo bash $here/apply.sh"
+  exit 1
+fi
+
+if [ "$changes" = 0 ] && [ "$failed" = 0 ]; then
+  echo "Nothing to change: the server already matches host/."
+fi
+[ "$failed" = 0 ] || echo "Some changes were refused or failed (above); the rest were made." >&2
+exit "$failed"
