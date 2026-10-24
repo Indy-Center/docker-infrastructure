@@ -103,7 +103,7 @@ jobs:
       - name: apply.sh against a fake root
         run: bash tests/host/test.sh
 
-      - name: bootstrap.sh in an ubuntu:24.04 container
+      - name: bootstrap.sh in an ubuntu:26.04 container
         run: bash tests/host/bootstrap-test.sh
 
       - name: The deploy ships host/ and never runs it

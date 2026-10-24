@@ -3,12 +3,16 @@
 # put a wrapper per command in a folder first on PATH, which runs this with STUB_NAME set
 # to the command's name. Every call is logged to $STUB_LOG, one line each ("systemctl
 # restart docker"), and what a real system would remember (installed and held packages,
-# swap, Docker networks) is kept under $STUB_STATE.
+# swap, running services, Docker networks) is kept under $STUB_STATE.
 name="$STUB_NAME"
 echo "$name $*" >> "$STUB_LOG"
 state="$STUB_STATE"
 mkdir -p "$state/installed" "$state/held" "$state/networks" "$state/active"
 touch "$state/swaps"
+
+# A test makes a command fail with a <command>-fails file, as swapoff does when the memory
+# it holds can't go elsewhere.
+[ ! -e "$state/$name-fails" ] || exit 1
 
 case "$name" in
   systemctl)
@@ -17,10 +21,11 @@ case "$name" in
       enable) touch "$state/active/${*: -1}" ;;
     esac
     ;;
+  timedatectl)
+    # timedatectl show -p NTPSynchronized --value: synchronised, unless a test made it not.
+    if [ -e "$state/unsynchronised" ]; then echo no; else echo yes; fi
+    ;;
   swapoff)
-    # A test makes swapoff fail (as when the memory it holds can't go elsewhere) with
-    # the swapoff-fails file.
-    [ ! -e "$state/swapoff-fails" ] || exit 1
     grep -vxF "$1" "$state/swaps" > "$state/swaps.new"
     mv "$state/swaps.new" "$state/swaps"
     ;;
@@ -56,6 +61,7 @@ case "$name" in
     ;;
   docker)
     case "$1 ${2:-}" in
+      "info "*) [ ! -e "$state/docker-down" ] ;;
       "network inspect") [ -e "$state/networks/$3" ] ;;
       "network create") touch "$state/networks/$3" ;;
       *) exit 0 ;;

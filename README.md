@@ -26,7 +26,7 @@ This repository holds the machinery shared by every app on the box, and no app. 
   - `install-cron.sh`: installs the runner's hourly crontab entry for `deploy`.
   - `install-command.sh`: installs the `backups` command for `deploy`.
 - `host/`: each server's base setup below Docker, copied to `/home/deploy/host/` and never run by the deploy (see [Server base setup](#server-base-setup)).
-- `tests/host/`: `host/`'s tests: `apply.sh` against a fake server root, `bootstrap.sh` in an `ubuntu:24.04` container, and the deploy's copy of `host/`. Never deployed.
+- `tests/host/`: `host/`'s tests: `apply.sh` against a fake server root, `bootstrap.sh` in an `ubuntu:26.04` container, and the deploy's copy of `host/`. Never deployed.
 - `tests/backup-runner/`: the runner's tests (`test.sh`) and the helper commands' (`helpers-test.sh`), run in CI on a fake VPS (`fake-vps.sh`). Never deployed.
 - `staging/`: a throwaway Traefik against Let's Encrypt staging, used by `staging.yml` to prove certificate issuance. Never deployed.
 - `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up, and runs the backup runner's and `host/`'s tests.
@@ -34,7 +34,7 @@ This repository holds the machinery shared by every app on the box, and no app. 
 
 ## Server base setup
 
-Everything below Docker on a server (SSH logins, Docker from its apt repository, security updates, journald's cap, swap, UTC, the `/home/deploy` layout and `traefik-shared`) is in [`host/`](host/README.md): real config files, a `bootstrap.sh` an admin runs once as root on a fresh Ubuntu 24.04 server, and an `apply.sh` that makes a server match the files and is safe to run again. The setup is the same work on every server and should come out the same each time, so it lives in git rather than in someone's memory; an admin applies each change by hand, with `--check` first, rather than the deploy, because a bad SSH change applied with nobody watching could lock everyone out. The DigitalOcean droplet predates `host/` and was set up by hand.
+Everything below Docker on a server (SSH logins, Docker from its apt repository, security updates, journald's cap, swap, UTC, the `/home/deploy` layout and `traefik-shared`) is in [`host/`](host/README.md): real config files, a `bootstrap.sh` an admin runs once as root on a fresh Ubuntu 26.04 server, and an `apply.sh` that makes a server match the files and is safe to run again. The setup is the same work on every server and should come out the same each time, so it lives in git rather than in someone's memory; an admin applies each change by hand, with `--check` first, rather than the deploy, because a bad SSH change applied with nobody watching could lock everyone out. The DigitalOcean droplet predates `host/` and was set up by hand.
 
 ## Certificates
 

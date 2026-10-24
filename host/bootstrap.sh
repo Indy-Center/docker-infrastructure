@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Turns a fresh Ubuntu 24.04 server into one docker-infrastructure can deploy to. Run it
+# Turns a fresh Ubuntu 26.04 server into one docker-infrastructure can deploy to. Run it
 # once, as root, at the first login (host/README.md, "First login"):
 #
 #   bash bootstrap.sh <hostname> <admin> '<admin's public key>' '<deploy's public key>'
 #   bash bootstrap.sh alexandria hayden "$(cat hayden.pub)" "$(cat deploy.pub)"
 #
-# It creates the first admin (in sudo, with a password it asks for) and deploy (whose key
-# line gets `restrict`), sets the hostname, runs apply.sh for everything else, then adds
-# deploy to the docker group. It is safe to run again: what is already right is left alone.
-# The admin must already be in AllowUsers in host/'s sshd drop-in.
+# It upgrades the image's packages, creates the first admin (in sudo, with a password it
+# asks for) and deploy (whose key line gets `restrict`), sets the hostname, runs apply.sh
+# for everything else, then adds deploy to the docker group and removes the interim sshd
+# drop-in from before it ran. It is safe to run again: what is already right is left
+# alone. The admin must already be in AllowUsers in host/'s sshd drop-in.
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SSHD_DROPIN="$here/files/etc/ssh/sshd_config.d/00-indy-center.conf"
+# What an admin set by hand at first login to close password login until this ran.
+INTERIM_DROPIN=/etc/ssh/sshd_config.d/01-interim.conf
 
 die() {
   echo "bootstrap.sh: $*" >&2
@@ -20,7 +22,7 @@ die() {
 }
 
 if [ $# != 4 ] || [ "${1:-}" = -h ] || [ "${1:-}" = --help ]; then
-  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
   [ $# = 4 ] || exit 2
   exit 0
 fi
@@ -46,12 +48,21 @@ check_key() {
 }
 check_key "$admin" "$admin_key"
 check_key deploy "$deploy_key"
-[ "$(awk '{print $2}' <<< "$admin_key")" != "$(awk '{print $2}' <<< "$deploy_key")" ] ||
-  die "the admin and deploy have the same key; deploy's must be its own, new for this server"
 
-allowed="$(awk 'tolower($1) == "allowusers" { for (i = 2; i <= NF; i++) print $i }' "$SSHD_DROPIN")"
+allowed="$(awk 'tolower($1) == "allowusers" { for (i = 2; i <= NF; i++) print $i }' "$here"/files/etc/ssh/sshd_config.d/*.conf)"
 grep -qxF "$admin" <<< "$allowed" ||
-  die "$admin is not in AllowUsers in host/files/etc/ssh/sshd_config.d/00-indy-center.conf, so they couldn't log in afterwards. Add them there (in the repo) first."
+  die "$admin is not in AllowUsers in host/'s sshd drop-in (files/etc/ssh/sshd_config.d/), so they couldn't log in afterwards. Add them there (in the repo) first."
+
+# ---------------------------------------------------------------------------
+# The image's packages, whose lists may be weeks old
+# ---------------------------------------------------------------------------
+
+echo "Upgrading the image's packages:"
+export DEBIAN_FRONTEND=noninteractive
+if ! apt-get update -q ||
+  ! apt-get -y -q -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold upgrade; then
+  die "apt-get couldn't upgrade the image's packages"
+fi
 
 # ---------------------------------------------------------------------------
 # Users and keys
@@ -120,16 +131,14 @@ if [ "$(cat /etc/hostname 2> /dev/null)" != "$hostname" ]; then
   hostname "$hostname" 2> /dev/null || true # not allowed in a container
   echo "set the hostname to $hostname"
 fi
-# So sudo can resolve its own hostname.
-grep -qE "^127\.0\.1\.1[[:space:]]+$hostname\$" /etc/hosts ||
-  { echo "127.0.1.1 $hostname" >> /etc/hosts && echo "added $hostname to /etc/hosts"; }
 # Stop cloud-init putting the provider's hostname back at the next boot.
 if [ -d /etc/cloud/cloud.cfg.d ] && [ ! -e /etc/cloud/cloud.cfg.d/99-indy-center-hostname.cfg ]; then
   echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-indy-center-hostname.cfg
 fi
 
 # ---------------------------------------------------------------------------
-# Everything else, then deploy into docker (which apply.sh's Docker install creates)
+# Everything else, then deploy into docker (which apply.sh's Docker install creates), and
+# the interim drop-in removed once apply.sh's own is in place
 # ---------------------------------------------------------------------------
 
 echo
@@ -143,6 +152,12 @@ if getent group docker > /dev/null; then
 else
   echo "No docker group yet (Docker didn't install), so deploy isn't in it." >&2
   applied=1
+fi
+
+# Only once apply.sh has finished, so password login never opens up between the two.
+if [ "$applied" = 0 ] && [ -e "$INTERIM_DROPIN" ]; then
+  rm -f "$INTERIM_DROPIN" && echo "removed $INTERIM_DROPIN; host/'s own drop-in covers it"
+  systemctl try-reload-or-restart ssh || { echo "couldn't reload ssh" >&2; applied=1; }
 fi
 
 if [ "$applied" != 0 ]; then

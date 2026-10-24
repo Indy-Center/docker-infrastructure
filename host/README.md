@@ -2,7 +2,7 @@
 
 Everything below Docker on a server docker-infrastructure deploys to, as files in git: who
 can log in over SSH, Docker itself, security updates, logs, swap and the clock. A fresh
-Ubuntu 24.04 server gets it from one script at its first login. After that, a change is a
+Ubuntu 26.04 server gets it from one script at its first login. After that, a change is a
 pull request, which an admin applies by hand.
 
 Nothing here is secret: the keys in it are public halves.
@@ -17,18 +17,19 @@ Nothing here is secret: the keys in it are public halves.
 
 | What | How |
 | ---- | --- |
-| SSH | `/etc/ssh/sshd_config.d/00-indy-center.conf`: keys only, no root login, and `AllowUsers` lists every admin plus `deploy`. Port 22. No fail2ban: with keys only, password guessing can't succeed |
-| Docker | From Docker's own apt repository (`docker.sources`, signed by `docker.asc`, Docker's key `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`), never the snap. Its packages are held. `daemon.json` turns on `live-restore`, so containers keep running while the daemon restarts, and gives every container json-file logs of 10m × 5 unless it sets its own |
+| SSH | `/etc/ssh/sshd_config.d/00-indy-center.conf`: keys only, no root login, no X11 forwarding, and `AllowUsers` lists every admin plus `deploy`. Port 22. No fail2ban: with keys only, password guessing can't succeed |
+| Docker | From Docker's own apt repository for the server's Ubuntu release (`docker.sources`, whose `Suites:` `apply.sh` fills in from `/etc/os-release`; signed by `docker.asc`, Docker's key `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`), never the snap. Its packages are held. `daemon.json` turns on `live-restore`, so containers keep running while the daemon restarts, and gives every container json-file logs of 10m × 5 unless it sets its own |
 | Updates | `unattended-upgrades` installs security updates every day, and never reboots. An admin reboots by hand at a quiet time, away from the 07:00 UTC backups |
-| Logs | journald keeps at most 1 GB |
+| Logs | journald keeps at most 1 GB, for 30 days, overriding the image's own `journald.conf` |
 | Memory | A 4 GB `/swapfile`, in `/etc/fstab`, at swappiness 10 |
-| Clock | UTC, the runner's timezone, with `systemd-timesyncd` running to keep the time |
+| Clock | UTC, the runner's timezone, kept synchronised by whichever time service the image came with (chrony on ALEXANDRIA, or `systemd-timesyncd`). `apply.sh` starts it if it's stopped, but never installs one: installing `systemd-timesyncd` would remove chrony. `--check` reports a clock that isn't synchronised |
 | `/home/deploy` | `traefik/`, `apps/`, `backup-runner/` and `backups/`, owned by `deploy` |
 | Docker network | `traefik-shared`, which Traefik and every app join |
 
 It changes only what differs, and reloads only what changed: `ssh` for the sshd drop-in,
 Docker for `daemon.json` (its containers stay up, since `live-restore` is on), journald,
-and the swappiness setting.
+and the swappiness setting. A reload that fails counts as refused: the run says so and
+exits non-zero, since the new config is in place but not in use.
 
 It never touches users or keys (`bootstrap.sh` makes the first two, and admins the rest by
 hand), the hostname, or the firewall, which is Hostinger's (below). There is no `ufw`:
@@ -79,10 +80,13 @@ bash bootstrap.sh alexandria hayden 'ssh-ed25519 AAAA... hayden@laptop' 'ssh-ed2
 ```
 
 You must already be in `AllowUsers` in `files/etc/ssh/sshd_config.d/00-indy-center.conf`;
-it stops before changing anything if you aren't. It asks for your password, which `sudo`
+it stops before changing anything if you aren't. It first runs `apt-get update` and
+`upgrade`, since an image's package lists can be weeks old. It asks for your password, which `sudo`
 asks for later. `deploy`'s key line gets `restrict`: no forwarding, no terminal, no
-`~/.ssh/rc`, none of which the deploy's commands and rsync need. Run again, it changes
-only what isn't right yet.
+`~/.ssh/rc`, none of which the deploy's commands and rsync need. Once `apply.sh` has
+finished, it removes `/etc/ssh/sshd_config.d/01-interim.conf`, if an admin put one there to
+turn password login off until bootstrap ran. Run again, it changes only what isn't right
+yet.
 
 **Before closing the root session,** check from a second terminal that you can log in and
 use sudo, since root can't log in over SSH any more:
@@ -109,10 +113,15 @@ sudo bash /home/deploy/host/apply.sh
 `--check` prints a `differs` line for each difference (with a diff for a changed file) and
 ends with the count. It exits 0 when the server matches, 1 when it doesn't, 2 for a bad
 option, and 3 when it couldn't finish, so its list isn't complete. It needs no root, so
-the runner can run it too. What it can't see as the user running it, it prints as
-`skipped` rather than as a difference: the Docker network without access to Docker, and
-`/home/deploy`'s folders from an admin's account (`deploy`'s home is private). Run it with
-`sudo` to include both.
+the backup runner can run it as `deploy`. What it can't see as the user running it counts
+as a difference, since it can't say the server matches: the Docker network without access
+to Docker (or with Docker down), and `/home/deploy`'s folders from an admin's account
+(`deploy`'s home is private). Run it with `sudo` to see both.
+
+It also prints an `extra` line for each sshd drop-in that isn't in `files/`, such as the
+image's own `50-cloud-init.conf`, saying if it sets `PasswordAuthentication yes` or lets
+root log in. These aren't differences: `00-indy-center.conf` sorts first, and sshd keeps
+the first value it reads, so they can't undo it.
 
 To upgrade Docker (about every quarter, at a quiet time):
 
@@ -214,7 +223,7 @@ CI runs these on every pull request (`.github/workflows/ci.yml`, job `host`):
 - `bash tests/host/test.sh`: `apply.sh` against a fake server root, with the commands that
   need a real kernel, init or apt (`systemctl`, `apt-get`, `swapon`, `docker`, ...)
   stubbed, and the real `sshd`. Needs `openssh-server`.
-- `bash tests/host/bootstrap-test.sh`: `bootstrap.sh` in an `ubuntu:24.04` container, run
+- `bash tests/host/bootstrap-test.sh`: `bootstrap.sh` in an `ubuntu:26.04` container, run
   twice. Needs Docker.
 - `bash tests/host/deploy-test.sh`: the deploy's step that copies `host/`, against a fake
   server, showing it lands and nothing runs.
