@@ -22,7 +22,7 @@ Nothing here is secret: the keys in it are public halves.
 | Updates | `unattended-upgrades` installs security updates every day, and never reboots. An admin reboots by hand at a quiet time, away from the 07:00 UTC backups |
 | Logs | journald keeps at most 1 GB |
 | Memory | A 4 GB `/swapfile`, in `/etc/fstab`, at swappiness 10 |
-| Clock | UTC, the runner's timezone. `systemd-timesyncd` (Ubuntu's own) keeps the time |
+| Clock | UTC, the runner's timezone, with `systemd-timesyncd` running to keep the time |
 | `/home/deploy` | `traefik/`, `apps/`, `backup-runner/` and `backups/`, owned by `deploy` |
 | Docker network | `traefik-shared`, which Traefik and every app join |
 
@@ -107,9 +107,12 @@ sudo bash /home/deploy/host/apply.sh
 ```
 
 `--check` prints a `differs` line for each difference (with a diff for a changed file) and
-ends with the count. It exits 0 when the server matches, 1 when it doesn't, and 2 for a
-bad option. It needs no root, so the runner can run it too; without access to Docker it
-skips the network check and says so.
+ends with the count. It exits 0 when the server matches, 1 when it doesn't, 2 for a bad
+option, and 3 when it couldn't finish, so its list isn't complete. It needs no root, so
+the runner can run it too. What it can't see as the user running it, it prints as
+`skipped` rather than as a difference: the Docker network without access to Docker, and
+`/home/deploy`'s folders from an admin's account (`deploy`'s home is private). Run it with
+`sudo` to include both.
 
 To upgrade Docker (about every quarter, at a quiet time):
 

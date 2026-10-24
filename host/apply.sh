@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Makes this server's base system match host/: the files under host/files/ copied to the
-# same paths, plus Docker from its apt repository (held), the swapfile, UTC, the
-# /home/deploy layout and the traefik-shared network. Safe to run again: it changes only
-# what differs, and reloads only the services whose config changed.
+# same paths, plus Docker from its apt repository (held), the swapfile, UTC kept by
+# systemd-timesyncd, the /home/deploy layout and the traefik-shared network. Safe to run
+# again: it changes only what differs, and reloads only the services whose config changed.
 #
 #   sudo bash /home/deploy/host/apply.sh --check   # print each difference; changes nothing
 #   sudo bash /home/deploy/host/apply.sh           # apply them
 #
 # --check needs no root (the runner runs it too). It exits 0 when the server matches,
-# 1 when anything differs. Without --check it exits non-zero if anything was refused or
-# failed, after doing the rest. See host/README.md, and decision 0008 in the notes for why.
+# 1 when anything differs. Without --check it exits 1 if anything was refused or failed,
+# after doing the rest. Either way, 2 is a bad option and 3 means it couldn't finish, so
+# what it printed is not the whole story. See host/README.md.
 #
 # HOST_ROOT=<folder> runs it against a fake server root instead of /, for the tests.
 set -uo pipefail
@@ -19,13 +20,12 @@ root="${HOST_ROOT:-}"
 PATH="$PATH:/usr/sbin:/sbin"
 
 DOCKER_PACKAGES=(docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin)
-SWAPFILE_SIZE=4G
-SWAPFILE_BYTES=4294967296
+SWAPFILE_GB=4
 TIMEZONE=/usr/share/zoneinfo/Etc/UTC
 DEPLOY_DIRS=(traefik apps backup-runner backups)
 NETWORK=traefik-shared
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; }
 
 check=false
 case "${1:-}" in
@@ -39,6 +39,10 @@ if ! $check && [ -z "$root" ] && [ "$(id -u)" != 0 ]; then
   echo "apply.sh: changing the server needs root. Run it with sudo, or use --check." >&2
   exit 1
 fi
+
+# From here, any way out but the end of this script (such as an unset variable) exits 3.
+finished=false
+trap '$finished || { echo "apply.sh: couldn'"'"'t finish; see above. This is not the whole story." >&2; exit 3; }' EXIT
 
 differences=0 # in --check
 changes=0     # without --check
@@ -78,6 +82,9 @@ admin="${HOST_ADMIN:-${SUDO_USER:-}}"
 # Why the sshd config now in place could lock someone out, or nothing if it can't.
 sshd_lockout() {
   local config="$root/etc/ssh/sshd_config" effective
+  # sshd -t needs this folder, which only exists once sshd has run: Ubuntu 24.04 starts
+  # it from a socket, so before the first SSH login it may not have.
+  install -d -m 755 "$root/run/sshd"
   sshd -t -f "$config" 2>&1 | sed 's/^/    /' >&2
   [ "${PIPESTATUS[0]}" = 0 ] || { echo "sshd -t rejects it"; return; }
   effective="$(sshd -T -f "$config" 2> /dev/null)"
@@ -111,6 +118,7 @@ install_sshd_file() {
   changed+="$f "
 }
 
+managed="$(cd "$here/files" && find . -type f | sed 's|^\.||' | sort)" || exit 3
 while read -r f; do
   src="$here/files$f"
   dest="$root$f"
@@ -130,7 +138,7 @@ while read -r f; do
     /etc/ssh/sshd_config.d/*) install_sshd_file "$f" ;;
     *) install_file "$f" ;;
   esac
-done < <(cd "$here/files" && find . -type f | sed 's|^\.||' | sort)
+done <<< "$managed"
 
 # ---------------------------------------------------------------------------
 # Packages: Docker from its repository, held, and unattended-upgrades
@@ -141,22 +149,23 @@ installed() { dpkg-query -W -f='${Status}' "$1" 2> /dev/null | grep -q 'install 
 docker_was_installed=false
 installed docker-ce && docker_was_installed=true
 
-for list in docker unattended; do
-  if [ $list = docker ]; then packages=("${DOCKER_PACKAGES[@]}"); else packages=(unattended-upgrades); fi
-  missing=()
-  for p in "${packages[@]}"; do installed "$p" || missing+=("$p"); done
-  [ ${#missing[@]} = 0 ] && continue
+# ensure_installed PACKAGE...: installs whichever of them aren't, in one apt-get.
+ensure_installed() {
+  local p missing=()
+  for p in "$@"; do installed "$p" || missing+=("$p"); done
+  [ ${#missing[@]} = 0 ] && return
   if $check; then
     for p in "${missing[@]}"; do differs "package $p" "not installed"; done
-    continue
-  fi
-  if DEBIAN_FRONTEND=noninteractive apt-get update -q &&
+  elif DEBIAN_FRONTEND=noninteractive apt-get update -q &&
     DEBIAN_FRONTEND=noninteractive apt-get install -y "${missing[@]}"; then
     did "installed ${missing[*]}"
   else
     refuse "packages ${missing[*]}" "apt-get failed"
   fi
-done
+}
+
+ensure_installed "${DOCKER_PACKAGES[@]}"
+ensure_installed unattended-upgrades
 
 held="$(apt-mark showhold 2> /dev/null)"
 unheld=()
@@ -197,7 +206,7 @@ if ! $check; then
 fi
 
 # ---------------------------------------------------------------------------
-# Timezone
+# The clock: UTC, kept by systemd-timesyncd
 # ---------------------------------------------------------------------------
 
 if [ "$(readlink "$root/etc/localtime")" != "$TIMEZONE" ]; then
@@ -208,19 +217,32 @@ if [ "$(readlink "$root/etc/localtime")" != "$TIMEZONE" ]; then
   fi
 fi
 
+if ! systemctl is-active --quiet systemd-timesyncd; then
+  if $check; then
+    differs systemd-timesyncd "not running"
+  elif systemctl enable --now systemd-timesyncd; then
+    did "started systemd-timesyncd"
+  else
+    refuse systemd-timesyncd "couldn't start it"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Swap: a 4 GB swapfile, in fstab and on
 # ---------------------------------------------------------------------------
 
 swapfile="$root/swapfile"
-if [ "$(stat -c %s "$swapfile" 2> /dev/null)" != "$SWAPFILE_BYTES" ]; then
+swap_on() { swapon --show=NAME --noheadings 2> /dev/null | grep -qxF "$swapfile"; }
+
+if [ "$(stat -c %s "$swapfile" 2> /dev/null)" != $((SWAPFILE_GB * 1024 * 1024 * 1024)) ]; then
   if $check; then
-    differs /swapfile "missing, or not $SWAPFILE_SIZE"
+    differs /swapfile "missing, or not $SWAPFILE_GB GB"
+  elif swap_on && ! swapoff "$swapfile"; then
+    refuse /swapfile "it isn't $SWAPFILE_GB GB, and swapoff couldn't free it to replace it. Run apply.sh again after a reboot"
   else
-    swapoff "$swapfile" 2> /dev/null
     rm -f "$swapfile"
-    if fallocate -l "$SWAPFILE_SIZE" "$swapfile" && chmod 600 "$swapfile" && mkswap "$swapfile" > /dev/null; then
-      did "/swapfile ($SWAPFILE_SIZE)"
+    if fallocate -l "${SWAPFILE_GB}G" "$swapfile" && chmod 600 "$swapfile" && mkswap "$swapfile" > /dev/null; then
+      did "/swapfile ($SWAPFILE_GB GB)"
     else
       refuse /swapfile "couldn't create it"
     fi
@@ -229,7 +251,7 @@ elif [ "$(stat -c %a "$swapfile")" != 600 ]; then
   if $check; then differs /swapfile "not mode 600"; else chmod 600 "$swapfile" && did "/swapfile (mode 600)"; fi
 fi
 
-if ! grep -qE '^/swapfile[[:space:]]+none[[:space:]]+swap[[:space:]]' "$root/etc/fstab" 2> /dev/null; then
+if ! grep -qE '^/swapfile[[:space:]]' "$root/etc/fstab" 2> /dev/null; then
   if $check; then
     differs /etc/fstab "no /swapfile line"
   else
@@ -237,7 +259,7 @@ if ! grep -qE '^/swapfile[[:space:]]+none[[:space:]]+swap[[:space:]]' "$root/etc
   fi
 fi
 
-if ! swapon --show=NAME --noheadings 2> /dev/null | grep -qxF "$swapfile"; then
+if ! swap_on; then
   if $check; then
     differs "swap" "/swapfile is not on"
   elif [ -f "$swapfile" ]; then
@@ -253,7 +275,10 @@ dirs=("$root/home/deploy")
 for d in "${DEPLOY_DIRS[@]}"; do dirs+=("$root/home/deploy/$d"); done
 missing=()
 for d in "${dirs[@]}"; do [ -d "$d" ] || missing+=("${d#"$root"}"); done
-if [ ${#missing[@]} != 0 ]; then
+if [ -d "$root/home/deploy" ] && [ ! -x "$root/home/deploy" ]; then
+  # Only deploy and root can look inside, so an admin's --check without sudo can't tell.
+  echo "skipped  /home/deploy's folders (can't look inside as $(id -un); run --check with sudo to include them)"
+elif [ ${#missing[@]} != 0 ]; then
   if $check; then
     for d in "${missing[@]}"; do differs "$d" "missing"; done
   elif mkdir -p "${dirs[@]}" && chown deploy:deploy "${dirs[@]}"; then
@@ -281,6 +306,7 @@ fi
 
 # ---------------------------------------------------------------------------
 
+finished=true
 if $check; then
   if [ "$differences" = 0 ]; then
     echo "No differences from host/."

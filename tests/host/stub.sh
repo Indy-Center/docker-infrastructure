@@ -7,10 +7,23 @@
 name="$STUB_NAME"
 echo "$name $*" >> "$STUB_LOG"
 state="$STUB_STATE"
-mkdir -p "$state/installed" "$state/held" "$state/networks"
+mkdir -p "$state/installed" "$state/held" "$state/networks" "$state/active"
 touch "$state/swaps"
 
 case "$name" in
+  systemctl)
+    case "${1:-}" in
+      is-active) [ -e "$state/active/${*: -1}" ] ;;
+      enable) touch "$state/active/${*: -1}" ;;
+    esac
+    ;;
+  swapoff)
+    # A test makes swapoff fail (as when the memory it holds can't go elsewhere) with
+    # the swapoff-fails file.
+    [ ! -e "$state/swapoff-fails" ] || exit 1
+    grep -vxF "$1" "$state/swaps" > "$state/swaps.new"
+    mv "$state/swaps.new" "$state/swaps"
+    ;;
   dpkg-query)
     # dpkg-query -W -f='${Status}' <package>
     pkg="${*: -1}"

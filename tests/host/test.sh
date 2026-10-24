@@ -150,7 +150,7 @@ test_a_second_apply_changes_and_reloads_nothing() {
   assert_eq "$(rc)" 0 || return 1
   assert_eq "$(snapshot)" "$before" "files after the second run" || return 1
   assert_out_has '^Nothing to change' || return 1
-  assert_not_called '^(systemctl|apt-get|apt-mark hold|fallocate|mkswap|swapon /|sysctl|chown|docker network create)'
+  assert_not_called '^(systemctl (restart|enable|try)|apt-get|apt-mark hold|fallocate|mkswap|swapon /|sysctl|chown|docker network create)'
 }
 
 test_check_names_a_changed_file_and_apply_puts_it_back_reloading_only_its_service() {
@@ -164,7 +164,7 @@ test_check_names_a_changed_file_and_apply_puts_it_back_reloading_only_its_servic
   assert_out_has '^    \+    "max-file": "5"' || return 1
   assert_eq "$(grep -c '^differs' "$T/out")" 1 "differences reported" || return 1
   assert_out_has '^1 difference' || return 1
-  assert_eq "$(grep -vE '^(dpkg-query|apt-mark showhold|swapon --show|docker (info|network inspect))' "$STUB_LOG" || true)" "" \
+  assert_eq "$(grep -vE '^(dpkg-query|apt-mark showhold|swapon --show|systemctl is-active|docker (info|network inspect))' "$STUB_LOG" || true)" "" \
     "--check only looks" || return 1
 
   apply
@@ -200,6 +200,52 @@ test_check_runs_without_root_and_apply_does_not() {
   assert_eq "$?" 1 || return 1
   assert_out_has 'needs root' || return 1
   assert_eq "$(cat "$STUB_LOG")" "" "commands run"
+}
+
+test_the_clock_is_kept_by_timesyncd() {
+  apply
+  assert_called "systemctl enable --now systemd-timesyncd" || return 1
+  rm "$STUB_STATE/active/systemd-timesyncd"
+  apply --check
+  assert_eq "$(rc)" 1 || return 1
+  assert_out_has '^differs  systemd-timesyncd  \(not running\)'
+}
+
+test_check_without_access_to_home_deploy_skips_it_rather_than_reporting_it_missing() {
+  apply
+  chmod 700 "$R/home/deploy"
+  # The test runs as the folder's owner, so take its access away entirely.
+  chmod 000 "$R/home/deploy"
+  apply --check
+  chmod 755 "$R/home/deploy"
+  assert_eq "$(rc)" 0 || return 1
+  assert_out_has '^skipped  /home/deploy'
+}
+
+test_an_existing_swapfile_line_in_fstab_is_not_added_twice() {
+  echo "/swapfile swap swap defaults 0 0" >> "$R/etc/fstab"
+  apply
+  assert_eq "$(grep -c '^/swapfile' "$R/etc/fstab")" 1
+}
+
+test_a_swapfile_that_cannot_be_turned_off_is_left_alone() {
+  truncate -s 2G "$R/swapfile"
+  mkdir -p "$STUB_STATE" && echo "$R/swapfile" > "$STUB_STATE/swaps"
+  touch "$STUB_STATE/swapoff-fails"
+  apply
+  assert_eq "$(rc)" 1 || return 1
+  assert_out_has '^refused  /swapfile: ' || return 1
+  assert_eq "$(stat -c %s "$R/swapfile")" 2147483648 "the old swapfile stays"
+}
+
+test_check_that_cannot_finish_says_so_with_its_own_exit_code() {
+  apply
+  # A managed file's folder that can't be read: find fails partway through.
+  chmod 000 "$T/host/files/etc/docker"
+  apply --check
+  chmod 755 "$T/host/files/etc/docker"
+  assert_eq "$(rc)" 3 || return 1
+  assert_out_has "couldn't finish"
 }
 
 # --- SSH guards ---------------------------------------------------------------------------

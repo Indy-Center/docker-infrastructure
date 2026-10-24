@@ -27,19 +27,20 @@ EOF
 
 # Runs each test function in a new container, where this file is sourced with `inside`.
 run_tests() {
-  local passed=0 failed=0 t
+  local passed=0 failed=0 t out
+  out="$(mktemp)"
   for t in $(declare -F | awk '{print $3}' | grep '^test_' | grep -- "${1:-}"); do
     if docker run --rm -v "$repo:/repo:ro" -e TEST="$t" "$IMAGE" \
-      bash -c 'source /repo/tests/host/bootstrap-test.sh inside' > /tmp/bootstrap-test.$$ 2>&1; then
+      bash -c 'source /repo/tests/host/bootstrap-test.sh inside' > "$out" 2>&1; then
       echo "ok   $t"
       passed=$((passed + 1))
     else
       echo "FAIL $t"
-      sed 's/^/    | /' /tmp/bootstrap-test.$$ | tail -30
+      sed 's/^/    | /' "$out" | tail -30
       failed=$((failed + 1))
     fi
   done
-  rm -f /tmp/bootstrap-test.$$
+  rm -f "$out"
   echo "$passed passed, $failed failed"
   [ "$failed" = 0 ]
 }
@@ -119,7 +120,7 @@ test_bootstrap_run_twice_changes_nothing() {
   bash /root/host/bootstrap.sh alexandria hayden "$ADMIN_KEY" "$DEPLOY_KEY" < /dev/null > /out 2>&1 || rc=$?
   assert_eq "$rc" 0 "second run's exit code" || return 1
   assert_eq "$(snapshot)" "$before" "/etc and /home after the second run" || return 1
-  ! grep -qE '^(systemctl|apt-get|apt-mark hold|fallocate|swapon /|docker network create)' /calls ||
+  ! grep -qE '^(systemctl (restart|enable|try)|apt-get|apt-mark hold|fallocate|swapon /|docker network create)' /calls ||
     fail "the second run changed something: $(cat /calls)"
 }
 
