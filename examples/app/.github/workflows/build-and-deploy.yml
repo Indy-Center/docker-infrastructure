@@ -109,3 +109,12 @@ jobs:
             exit 1
           fi
           EOF
+
+      # Gives each hostname in the app's Traefik Host() rules a DNS-only CNAME to this server, if it has no record
+      # of its own. A record already pointing at this server is left as it is; one pointing anywhere else gets a
+      # warning and is left too, so moving an app between servers still means switching its record by hand.
+      # docker-infrastructure's README ("Adding an app") has the details. The app is already up by now, so a
+      # Cloudflare error fails only this step. An app whose first visitor matters (its first sign-up becomes its
+      # owner) leaves this step out until that first run is done.
+      - name: DNS record
+        run: ssh vps .local/bin/app-dns --app "$APP"
