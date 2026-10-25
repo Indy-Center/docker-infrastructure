@@ -157,6 +157,82 @@ $detail
   rm -f "$out"
 }
 
+# --- The server's own state ----------------------------------------------------------
+# On a server set up from host/ (decision 0008) the report says when it is waiting on an
+# admin: a reboot that security updates need, which it never does itself, and a merged
+# change to host/ not yet applied. The deploy ships host/ to every such server, so a
+# server without ~/host/ (the droplet, set up by hand) shows neither and raises nothing.
+
+HOST_DIR="${HOST_DIR:-$HOME/host}"
+# Ubuntu writes this when an update needs a reboot, and the package names in .pkgs. It is
+# in /run, which a reboot empties.
+REBOOT_REQUIRED="${REBOOT_REQUIRED:-/var/run/reboot-required}"
+REBOOT_ALERT_DAYS=14
+HOST_CHECK_TIMEOUT=10m
+
+has_host() { [ -f "$HOST_DIR/apply.sh" ]; }
+
+# Keeps when a reboot was first needed, in state/reboot-needed-since (seconds since
+# 1970), and forgets it, with its alert, once the file goes. Ubuntu rewrites the file
+# for every later update that needs a reboot, so the file's own time can't be kept.
+# Every run, so a reboot followed by a new update the same day still counts afresh.
+track_reboot() {
+  local since="$STATE/reboot-needed-since"
+  if [ ! -e "$REBOOT_REQUIRED" ]; then
+    rm -f "$since" "$STATE/reboot-alerted"
+  elif ! grep -qx '[0-9][0-9]*' "$since" 2>/dev/null; then
+    stat -c %Y "$REBOOT_REQUIRED" > "$since"
+  fi
+}
+
+# Sets the report's reboot line, with each package once, or none. A reboot still needed
+# after REBOOT_ALERT_DAYS alerts, once until the file goes.
+REBOOT_LINE=""
+check_reboot() {
+  REBOOT_LINE=""
+  [ -e "$REBOOT_REQUIRED" ] || return 0
+  local since days packages
+  since="$(cat "$STATE/reboot-needed-since")"
+  packages="$(awk 'NF && !seen[$0]++' "$REBOOT_REQUIRED.pkgs" 2>/dev/null | paste -sd, - | sed 's/,/, /g')"
+  REBOOT_LINE="Reboot needed since $(date -u -d "@$since" +%Y-%m-%d)${packages:+ ($packages)}"
+  days=$(( ($(date -u -d "$NOW" +%s) - since) / 86400 ))
+  if (( days >= REBOOT_ALERT_DAYS )) && [ ! -e "$STATE/reboot-alerted" ]; then
+    alert "$REBOOT_LINE, $days days ago. An admin reboots it at a quiet time, away from the 07:00 UTC backups; the apps come back on their own."
+    touch "$STATE/reboot-alerted"
+  fi
+}
+
+# Prints the report's host-config line: how many differences `apply.sh --check` finds,
+# or that it couldn't finish. Nothing when there are none. Its `extra` lines (files
+# host/ doesn't manage) aren't differences. Its output goes to the log.
+host_config_line() {
+  local out="$STAGING_DIR/host-check.log" status n why
+  mkdir -p "$STAGING_DIR"
+  log "apply.sh --check" >&2
+  timeout "$HOST_CHECK_TIMEOUT" bash "$HOST_DIR/apply.sh" --check > "$out" 2>&1 9>&- < /dev/null
+  status=$?
+  cat "$out" >&2
+  n="$(grep -c '^differs ' "$out")"
+  rm -f "$out"
+  case "$status" in
+    0) return ;;
+    1)
+      if [ "$n" = 1 ]; then
+        echo "Host config: 1 difference from the repo, run apply.sh --check"
+        return
+      elif (( n > 1 )); then
+        echo "Host config: $n differences from the repo, run apply.sh --check"
+        return
+      fi
+      why="exit 1, with no differences listed"
+      ;;
+    # timeout exits 124 when it stops the check.
+    124) why="still running after $HOST_CHECK_TIMEOUT" ;;
+    *) why="exit $status" ;;
+  esac
+  echo "Host config: apply.sh --check failed to run ($why), see runner.log"
+}
+
 # --- Results and the daily report ----------------------------------------------------
 # Each app's latest result (backed up, failed, no data, no recipe) is kept in
 # state/<app>, for the report. Last-good times and sizes come from the bucket itself, so
@@ -230,6 +306,15 @@ send_report() {
   if has_cms; then
     check="$(printf '%-28s %s' "restore check" "$(cat "$STATE/restore-check" 2>/dev/null || echo "not run yet")")"$'\n'
   fi
+  # The server's own state, under the table and above the apps' notes.
+  local waiting="" line
+  if has_host; then
+    check_reboot
+    [ -z "$REBOOT_LINE" ] || waiting+="$REBOOT_LINE"$'\n'
+    line="$(host_config_line)"
+    [ -z "$line" ] || waiting+="$line"$'\n'
+  fi
+  notes="$waiting$notes"
   post_discord report-webhook.url "**Backups on $SERVER for $DAY** (times UTC)
 \`\`\`
 $(printf '%-16s %-10s %-17s %s' app result "last good" space)
@@ -260,6 +345,7 @@ ping_status_page() {
 # --- The run -------------------------------------------------------------------------
 
 log "run as $NOW"
+! has_host || track_reboot
 for dir in "$APPS_DIR"/*/; do
   [ -d "$dir" ] || continue
   app="$(basename "$dir")"

@@ -59,6 +59,63 @@ app_failing() {
   touch "$T/apps/$1/restore.sh"
 }
 
+# --- The server's own state: host/ and a needed reboot ---------------------------------
+# A fresh fake VPS has neither ~/host/ nor /var/run/reboot-required: fake_vps_env points
+# the runner at $T/host and $T/run, so this machine's own never leak in.
+
+# A ~/host/ whose apply.sh --check prints the given text and exits with the given code.
+#   host_check_says <exit code> <output>
+host_check_says() {
+  mkdir -p "$T/host"
+  printf '%s\n' "$2" > "$T/host/check-output"
+  printf 'cat "%s"\nexit %s\n' "$T/host/check-output" "$1" > "$T/host/apply.sh"
+}
+
+# Ubuntu's reboot-required file, dated the given UTC day, with the given packages in
+# reboot-required.pkgs, one per line (Ubuntu repeats a package that asks twice).
+#   reboot_needed_since <YYYY-MM-DD> [package…]
+reboot_needed_since() {
+  mkdir -p "$T/run"
+  echo "*** System restart required ***" > "$T/run/reboot-required"
+  touch -d "$1T05:00:00Z" "$T/run/reboot-required"
+  shift
+  if [ $# -gt 0 ]; then printf '%s\n' "$@" > "$T/run/reboot-required.pkgs"; fi
+}
+
+# A fake server root matching host/ as apply.sh --check sees it, with the commands it
+# needs stubbed by tests/host/stub.sh, and Docker's packages held, as they are on a real
+# server. The repo's real host/ is copied to $T/host, so the runner runs the real check.
+# The stubs go in the runner's own bin/, first on its PATH. Exports what the check needs
+# (HOST_ROOT, STUB_STATE, STUB_LOG), so call it from the test itself, not a subshell.
+host_matching_the_repo() {
+  local r="$T/server-root" s="$T/stub-state" f p
+  cp -r "$repo/host" "$T/host"
+  # shellcheck source=tests/host/lib.sh
+  (source "$repo/tests/host/lib.sh"; make_stubs "$T/runner/bin" "$repo/tests/host/stub.sh")
+  export HOST_ROOT="$r" STUB_STATE="$s" STUB_LOG="$T/stub-calls"
+
+  mkdir -p "$r/etc"
+  printf 'NAME="Ubuntu"\nVERSION_ID="26.04"\nVERSION_CODENAME=resolute\n' > "$r/etc/os-release"
+  (cd "$repo/host/files" && find . -type f) | while read -r f; do
+    f="${f#.}"
+    mkdir -p "$(dirname "$r$f")"
+    sed 's/@VERSION_CODENAME@/resolute/g' "$repo/host/files$f" > "$r$f"
+  done
+  ln -s /usr/share/zoneinfo/Etc/UTC "$r/etc/localtime"
+  truncate -s 4G "$r/swapfile"
+  chmod 600 "$r/swapfile"
+  echo "/swapfile none swap sw 0 0" > "$r/etc/fstab"
+  mkdir -p "$r/home/deploy"/{traefik,apps,backup-runner,backups}
+
+  mkdir -p "$s/installed" "$s/held" "$s/active" "$s/networks"
+  for p in docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; do
+    touch "$s/installed/$p" "$s/held/$p"
+  done
+  touch "$s/installed/unattended-upgrades" "$s/installed/chrony" "$s/active/chrony" \
+    "$s/networks/traefik-shared"
+  echo "$r/swapfile" > "$s/swaps"
+}
+
 # --- Fake CMS backups, for the restore check and the scratch database ------------------
 # These need Docker and a real Postgres 17. A test that uses them starts with
 #   have_docker || return 0
@@ -146,10 +203,17 @@ messages() {
 
 message_count() { ls "$T/endpoint/$1"/*.body 2>/dev/null | grep -c . || true; }
 
+# The newest message the fake Discord received on one webhook.
+last_message() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["content"])' \
+    "$T/endpoint/$1/$(message_count "$1").body" 2>/dev/null || true
+}
+
 # The settings that point the runner and the helpers at the fake VPS, for `env`.
 fake_vps_env() {
   echo "BACKUP_RUNNER_HOME=$T/runner" "BACKUP_SCHEDULE=$T/schedule.conf" \
-    "BACKUP_MEDIA=$T/media.conf" "APPS_DIR=$T/apps" "STAGING_DIR=$T/staging"
+    "BACKUP_MEDIA=$T/media.conf" "APPS_DIR=$T/apps" "STAGING_DIR=$T/staging" \
+    "HOST_DIR=$T/host" "REBOOT_REQUIRED=$T/run/reboot-required"
 }
 
 # Runs the runner once, as the given UTC time, against the fake VPS.
