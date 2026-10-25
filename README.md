@@ -68,7 +68,7 @@ networks:
 
 Router names (`myapp` above) must be unique across every app on the box. Keep databases and other internal services on the app's own network, not on `traefik-shared`. Don't publish ports on the host. Traefik reaches the container over the network.
 
-An app runs on one server, picked by that server's settings prefix in `SERVER` at the top of its [`build-and-deploy.yml`](examples/app/.github/workflows/build-and-deploy.yml) (`SERVER: VANDERBILT` reads `VANDERBILT_HOST` and the other three [settings](#deployment)). An org admin gives the app's repository access to those four settings.
+An app runs on one server, picked by that server's settings prefix in `SERVER` at the top of its [`build-and-deploy.yml`](examples/app/.github/workflows/build-and-deploy.yml) (`SERVER: ALEXANDRIA` reads `ALEXANDRIA_HOST` and the other three [settings](#deployment)). An org admin gives the app's repository access to those four settings.
 
 ### The app's DNS record
 
@@ -227,7 +227,7 @@ The secrets folder holds:
 | File | What it is | Where it comes from |
 | ---- | ---------- | ------------------- |
 | `rclone.conf` | rclone config with one remote, `r2`, holding the runner's R2 key | The deploy, from this repository's secrets (below) |
-| `age.key` | The age key that encrypts every backup and decrypts it for a restore. Its source copy is "Backup encryption key (age)" in 1Password: **without it, every backup is unreadable** | The deploy |
+| `age.key` | The age key that encrypts every backup and decrypts it for a restore. Its source copy is "Backups — age encryption key" in 1Password: **without it, every backup is unreadable** | The deploy |
 | `report-webhook.url` | Discord webhook "Backups" in tech-team-notifications, for the daily backup report | The deploy |
 | `alert-webhook.url` | Discord webhook "Backup alerts" in tech-team-alerts, for alerts | The deploy |
 | `status-ping.url`, `status-ping.secret` | The status page's "backup finished" endpoint and its secret, sent as `Authorization: Bearer <secret>`. Until both exist the ping is skipped | By hand, once the status page exists |
@@ -304,9 +304,9 @@ Repository secrets and variables (**Settings → Secrets and variables → Actio
 | Name | Kind | Value |
 | ---- | ---- | ----- |
 | `CF_DNS_API_TOKEN` | secret | Traefik's Cloudflare DNS token, which every deploy writes to `/home/deploy/traefik/.env` ("Traefik — Cloudflare DNS token" in 1Password; see [Certificates](#certificates)) |
-| `INDY_CENTER_BACKUP_RUNNER_ACCESS_KEY_ID` | secret | Access Key ID of the "R2 backup runner" token (1Password) |
+| `INDY_CENTER_BACKUP_RUNNER_ACCESS_KEY_ID` | secret | Access Key ID of the R2 token ("Backups — R2 runner key" in 1Password) |
 | `INDY_CENTER_BACKUP_RUNNER_SECRET_ACCESS_KEY` | secret | Secret Access Key of the same token |
-| `INDY_CENTER_BACKUP_RUNNER_AGE_KEY` | secret | The age key: its `AGE-SECRET-KEY-1…` line, with or without the comment lines age-keygen writes above it ("Backup encryption key (age)" in 1Password) |
+| `INDY_CENTER_BACKUP_RUNNER_AGE_KEY` | secret | The age key: its `AGE-SECRET-KEY-1…` line, with or without the comment lines age-keygen writes above it ("Backups — age encryption key" in 1Password) |
 | `INDY_CENTER_BACKUP_RUNNER_REPORT_WEBHOOK` | secret | URL of Discord webhook "Backups" (1Password) |
 | `INDY_CENTER_BACKUP_RUNNER_ALERT_WEBHOOK` | secret | URL of Discord webhook "Backup alerts" (1Password) |
 | `CLOUDFLARE_ACCOUNT_ID` | variable | Cloudflare account ID, the first part of the R2 endpoint (`https://<id>.r2.cloudflarestorage.com`) |
