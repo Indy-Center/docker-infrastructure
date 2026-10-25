@@ -25,10 +25,16 @@ This repository holds the machinery shared by every app on the box, and no app. 
   - `install-tools.sh`: installs pinned, checksum-checked age and rclone into `~/backup-runner/bin/`.
   - `install-cron.sh`: installs the runner's hourly crontab entry for `deploy`.
   - `install-command.sh`: installs the `backups` command for `deploy`.
+- `host/`: each server's base setup below Docker, copied to `/home/deploy/host/` and never run by the deploy (see [Server base setup](#server-base-setup)).
+- `tests/host/`: `host/`'s tests: `apply.sh` against a fake server root, `bootstrap.sh` in an `ubuntu:26.04` container, and the deploy's copy of `host/`. Never deployed.
 - `tests/backup-runner/`: the runner's tests (`test.sh`) and the helper commands' (`helpers-test.sh`), run in CI on a fake VPS (`fake-vps.sh`). Never deployed.
 - `staging/`: a throwaway Traefik against Let's Encrypt staging, used by `staging.yml` to prove certificate issuance. Never deployed.
-- `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up, and runs the backup runner's tests.
-- `.github/workflows/build-and-deploy.yml`: runs CI, then, for each server in its list, rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH. Then it writes the runner's secrets (rclone config, age key, Discord webhooks), rsyncs `backup-runner/` to `/home/deploy/backup-runner/`, and installs its tools, crontab entry and `backups` command.
+- `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up, and runs the backup runner's and `host/`'s tests.
+- `.github/workflows/build-and-deploy.yml`: runs CI, then, for each server in its list, rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH. Then it writes the runner's secrets (rclone config, age key, Discord webhooks), rsyncs `backup-runner/` to `/home/deploy/backup-runner/`, and installs its tools, crontab entry and `backups` command. Last, it rsyncs `host/` to `/home/deploy/host/`, without running it.
+
+## Server base setup
+
+Everything below Docker on a server (SSH logins, Docker from its apt repository, security updates, journald's cap, swap, UTC, the `/home/deploy` layout and `traefik-shared`) is in [`host/`](host/README.md): real config files, a `bootstrap.sh` an admin runs once as root on a fresh Ubuntu 26.04 server, and an `apply.sh` that makes a server match the files and is safe to run again. The setup is the same work on every server and should come out the same each time, so it lives in git rather than in someone's memory; an admin applies each change by hand, with `--check` first, rather than the deploy, because a bad SSH change applied with nobody watching could lock everyone out. The DigitalOcean droplet predates `host/` and was set up by hand.
 
 ## Certificates
 
@@ -70,8 +76,11 @@ An app runs on one server, picked by that server's settings prefix in `SERVER` a
 | `/home/deploy/apps/<app>/` | `deploy` | One directory per app, deployed by that app's workflow |
 | `/home/deploy/backup-runner/` | `deploy` | The backup runner, deployed from `backup-runner/`, plus `secrets/`, `bin/`, `state/` and `logs/` (not in git) |
 | `/home/deploy/backups/<app>/` | `deploy` | Staging area for one app's backup while the runner encrypts and uploads it. Emptied after each one |
+| `/home/deploy/host/` | `deploy` | The server's [base setup](#server-base-setup), deployed from `host/` for an admin to apply. Never run by the deploy |
 
-Everything lives under the deploy user's home folder because Docker on this VPS is the Canonical snap. Snap confinement stops both the `docker` CLI and the daemon from reading paths such as `/opt`, but allows non-hidden paths under `/home`. The snap's automatic updates would restart every container, so they are held (`snap refresh --hold docker`). Update Docker by hand in a quiet period with `snap refresh docker`.
+On a server set up from `host/`, Docker comes from Docker's apt repository, its packages are held, and `apply.sh` creates `traefik-shared`. The rest of this section is about the droplet.
+
+Everything lives under the deploy user's home folder because Docker on the droplet is the Canonical snap. Snap confinement stops both the `docker` CLI and the daemon from reading paths such as `/opt`, but allows non-hidden paths under `/home`. The snap's automatic updates would restart every container, so they are held (`snap refresh --hold docker`). Update Docker by hand in a quiet period with `snap refresh docker`.
 
 Docker network `traefik-shared` is created once, by hand (`docker network create traefik-shared`). Every compose project, this one included, treats it as `external: true`.
 

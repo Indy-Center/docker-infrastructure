@@ -168,6 +168,12 @@ jobs:
             --exclude=/server \
             backup-runner/ vps:backup-runner/
 
+      # The server's base setup, so an admin can run `sudo bash ~deploy/host/apply.sh --check`
+      # against the merged version. The deploy only copies it: it never runs it, since
+      # changing the base system is an admin's job (see host/README.md).
+      - name: Sync host/ to ~/host/ (never run)
+        run: rsync -rlz --delete host/ vps:host/
+
       # Installs the pinned age and rclone into ~/backup-runner/bin (skipped when already
       # there), the hourly crontab entry that starts the runner, and the `backups`
       # command for the helper commands.
