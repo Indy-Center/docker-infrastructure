@@ -61,6 +61,29 @@ jobs:
             BatchMode yes
           EOF
 
+      # Writes ~/traefik/.env, which gives Traefik its Cloudflare token (the CF_DNS_API_TOKEN
+      # repo secret, shared by every server). The deploy owns that file and rewrites it every
+      # run, so the token changes by updating the secret and re-running the deploy, never by
+      # editing the file on the box. The value goes over stdin, never on a command line, and
+      # only deploy can read it. It comes before the sync, so a missing secret stops the
+      # deploy before anything reaches the server.
+      - name: Write Traefik's Cloudflare token
+        env:
+          SERVER: ${{ matrix.server }}
+          CF_DNS_API_TOKEN: ${{ secrets.CF_DNS_API_TOKEN }}
+        run: |
+          if [ -z "$CF_DNS_API_TOKEN" ]; then
+            echo "::error::Not set: CF_DNS_API_TOKEN. See the README's settings table; nothing was deployed to $SERVER"
+            exit 1
+          fi
+          printf 'CF_DNS_API_TOKEN=%s\n' "$CF_DNS_API_TOKEN" | ssh vps '
+            set -e
+            mkdir -p ~/traefik
+            umask 077
+            cat > ~/traefik/.env.tmp
+            mv ~/traefik/.env.tmp ~/traefik/.env
+          '
+
       # --delete removes files dropped from traefik/; excluded files (.env) are never deleted.
       - name: Sync traefik/ to ~/traefik/
         run: rsync -rlz --delete --exclude=.env traefik/ vps:traefik/
