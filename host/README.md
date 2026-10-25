@@ -105,8 +105,9 @@ it still gets you in if SSH locks you out.
 ## Applying a change
 
 Change the files here in a pull request. Once it's merged, the deploy copies `host/` to
-`/home/deploy/host/` on every server, but never runs it. On each server, from your own
-account:
+`/home/deploy/host/` on every server set up from it (not the droplet), but never runs it.
+Until an admin applies it, each server's daily backup report says how many differences
+`--check` finds. On each server, from your own account:
 
 ```bash
 sudo bash /home/deploy/host/apply.sh --check   # read what would change
