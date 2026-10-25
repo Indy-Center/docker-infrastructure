@@ -30,9 +30,15 @@ case "$name" in
     mv "$state/swaps.new" "$state/swaps"
     ;;
   dpkg-query)
-    # dpkg-query -W -f='${Status}' <package>
+    # dpkg-query -W -f=<format> <package>, for ${Status} ("hold ok installed" once the
+    # package is held, as real dpkg says) or ${db:Status-Status} ("installed").
     pkg="${*: -1}"
-    if [ -e "$state/installed/$pkg" ]; then echo "install ok installed"; else exit 1; fi
+    [ -e "$state/installed/$pkg" ] || exit 1
+    # shellcheck disable=SC2016 # the format's text, not an expansion
+    case "$*" in
+      *'${db:Status-Status}'*) echo installed ;;
+      *) if [ -e "$state/held/$pkg" ]; then echo "hold ok installed"; else echo "install ok installed"; fi ;;
+    esac
     ;;
   apt-get)
     if [ "${1:-}" = install ]; then

@@ -159,6 +159,18 @@ test_a_second_apply_changes_and_reloads_nothing() {
   assert_not_called '^(systemctl (restart|enable|try)|apt-get|apt-mark hold|fallocate|mkswap|swapon /|sysctl|chown|docker network create)'
 }
 
+test_held_packages_count_as_installed() {
+  apply
+  [ -e "$STUB_STATE/held/docker-ce" ] || fail "docker-ce wasn't held" || return 1
+  apply --check
+  assert_eq "$(rc)" 0 "--check's exit code" || return 1
+  assert_out_lacks '^differs  packages' || return 1
+  : > "$STUB_LOG"
+  apply
+  assert_eq "$(rc)" 0 || return 1
+  assert_not_called '^apt-get install'
+}
+
 test_check_names_a_changed_file_and_apply_puts_it_back_reloading_only_its_service() {
   apply
   sed -i 's/"max-file": "5"/"max-file": "50"/' "$R/etc/docker/daemon.json"

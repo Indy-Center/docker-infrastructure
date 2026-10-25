@@ -225,7 +225,8 @@ fi
 # Packages: Docker from its repository, held, and unattended-upgrades
 # ---------------------------------------------------------------------------
 
-installed() { dpkg-query -W -f='${Status}' "$1" 2> /dev/null | grep -q 'install ok installed'; }
+# dpkg's own state only: a held package's ${Status} reads "hold ok installed".
+installed() { [ "$(dpkg-query -W -f='${db:Status-Status}' "$1" 2> /dev/null)" = installed ]; }
 
 docker_was_installed=false
 installed docker-ce && docker_was_installed=true
