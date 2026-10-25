@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
 
 env:
-  # The server this app runs on, by the prefix of its four organization settings (VANDERBILT_HOST and so on;
+  # The server this app runs on, by the prefix of its four organization settings (ALEXANDRIA_HOST and so on;
   # docker-infrastructure's README lists each server's). Moving the app to another server starts here.
-  SERVER: VANDERBILT
+  SERVER: ALEXANDRIA
 
 concurrency:
   group: deploy-${{ github.event.repository.name }}
