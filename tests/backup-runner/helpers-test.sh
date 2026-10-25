@@ -352,7 +352,28 @@ test_media_find_and_get_bring_back_a_file_deleted_from_the_cms() {
   out="$(backups media-get payload-media/courses/Plane.png "$T/out")" || fail "media-get failed: $out" || return 1
   assert_eq "$(cat "$T/out/Plane.png")" "plane" || return 1
   # It says where the file goes back.
-  echo "$out" | grep -q "payload-media.*courses/Plane.png" || fail "no put-back instructions: $out"
+  echo "$out" | grep -q "payload-media.*courses/Plane.png" || fail "no put-back instructions: $out" || return 1
+  # And how to get it to your computer: a copy in /tmp that your own login can read.
+  echo "$out" | grep -qF "install -m 644 '$T/out/Plane.png' '/tmp/Plane.png'" \
+    || fail "no copy to /tmp: $out"
+}
+
+test_media_get_into_tmp_says_to_make_the_file_readable_not_copy_it() {
+  # The file goes into the real /tmp, as on the VPS, under a name no one else uses.
+  local name="media-get-test-$$-$RANDOM.png"
+  media_bucket payload-media
+  echo "plane" > "$T/r2/payload-media/$name"
+  run_at 2026-10-20T07:00:00Z
+
+  local out status
+  out="$(backups media-get "payload-media/$name" /tmp)"
+  status=$?
+  rm -f "/tmp/$name"
+  [ "$status" = 0 ] || fail "media-get failed: $out" || return 1
+  # Copying a file in /tmp onto itself fails, so it says to make that file readable.
+  echo "$out" | grep -qF "chmod 644 '/tmp/$name'" || fail "no chmod: $out" || return 1
+  echo "$out" | grep -q "install -m" && fail "copies the file onto itself: $out" && return 1
+  return 0
 }
 
 test_media_get_without_a_bucket_and_path_says_what_it_needs() {

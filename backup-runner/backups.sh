@@ -552,7 +552,12 @@ cmd_media-get() {
   file="$(realpath "$folder/$name")"
   echo
   echo "To get it to your computer: here, as deploy, run"
-  echo "  install -m 644 '$file' '/tmp/$name'"
+  # Already in /tmp: copying it onto itself would fail, so just make it readable.
+  if [ "$file" = "/tmp/$name" ]; then
+    echo "  chmod 644 '$file'"
+  else
+    echo "  install -m 644 '$file' '/tmp/$name'"
+  fi
   echo "then on your computer"
   echo "  scp '<you>@<vps>:/tmp/$name' ."
   echo "and delete /tmp/$name on the VPS once it's uploaded."
