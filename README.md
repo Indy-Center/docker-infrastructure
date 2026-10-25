@@ -127,6 +127,13 @@ Each night it also updates the **media copy**, and each Sunday it runs the **res
 
 A failed recipe, encryption or upload raises an **alert** in tech-team-alerts for that app, and the runner moves on to the next. Once a day, after the 07:00 UTC run, it posts the **backup report** to tech-team-notifications, then tells the status page the day's backups finished. The report lists each app's result, last good backup and space used, then each media bucket's file count and size in the media copy, then the last restore check's result.
 
+Under that, on a server set up from [`host/`](#server-base-setup), the report says when the server is waiting on an admin, with one line for each that applies:
+
+- `Reboot needed since 2026-10-18 (linux-image-…, libc6)`: security updates install themselves but never reboot the server, so `/var/run/reboot-required` is there, with the packages from `reboot-required.pkgs`. The date is when the runner first saw it. A reboot still needed after 14 days raises one alert, and the runner forgets it once the file goes (a reboot removes it). Reboot at a quiet time, away from the 07:00 UTC backups.
+- `Host config: 2 differences from the repo, run apply.sh --check`: `~/host/apply.sh --check`, run as `deploy`, found the server differs from `host/`, usually a merged change not yet applied. Its `extra` lines, for files `host/` doesn't manage, aren't counted. A check that fails or takes over 10 minutes says `Host config: apply.sh --check failed to run (exit 3), see runner.log` instead, and its output is in the log.
+
+The runner goes by whether `~/host/apply.sh` exists, and the deploy doesn't ship `host/` to the droplet, so the droplet's report has neither line, and the droplet raises no reboot alert.
+
 Every server's runner posts to the same two channels, so the report's title (`Backups on vanderbilt for 2026-10-20`) and each alert (`vanderbilt: Backup of …`) name the server, and the status page ping adds `?server=vanderbilt`. The name is the server's settings prefix in lower case, which the deploy writes to `~/backup-runner/server`; the box's own hostname is whatever the provider set, so it isn't used. A runner without that file says `unnamed server`.
 
 ### What an app ships
@@ -215,7 +222,7 @@ Each file is named for the UTC time of its run and the recipe's file, plus `.age
 | `~/backup-runner/bin/` | The pinned `age`, `age-keygen` and `rclone`, installed by the deploy |
 | `~/backup-runner/server` | The server's name for the report, alerts and status ping (`vanderbilt`), written by the deploy |
 | `~/backup-runner/logs/runner.log` | Everything each run did, and all the recipes' output. At 5 MB it moves to `runner.log.1`, replacing the older one |
-| `~/backup-runner/state/` | Each app's latest result and last run hour, and the last restore check's, for the schedule and the report. Losing it means every app is backed up at the next run, and the restore check waits for Sunday |
+| `~/backup-runner/state/` | Each app's latest result and last run hour, the last restore check's, and when a reboot was first needed, for the schedule and the report. Losing it means every app is backed up at the next run, the restore check waits for Sunday, and a needed reboot dates from the file's own time |
 | `~/.local/bin/backups` | The `backups` command: runs `~/backup-runner/backups.sh` |
 
 ```bash

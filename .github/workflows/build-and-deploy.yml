@@ -193,8 +193,10 @@ jobs:
 
       # The server's base setup, so an admin can run `sudo bash ~deploy/host/apply.sh --check`
       # against the merged version. The deploy only copies it: it never runs it, since
-      # changing the base system is an admin's job (see host/README.md).
+      # changing the base system is an admin's job (see host/README.md). Not to the droplet,
+      # which was set up by hand: the runner's report goes by whether ~/host/ is there.
       - name: Sync host/ to ~/host/ (never run)
+        if: matrix.server != 'VANDERBILT'
         run: rsync -rlz --delete host/ vps:host/
 
       # Installs the pinned age and rclone into ~/backup-runner/bin (skipped when already

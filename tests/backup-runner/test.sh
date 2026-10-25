@@ -441,4 +441,126 @@ test_no_restore_check_without_a_cms_on_the_box() {
   return 0
 }
 
+# --- The server's own state: a needed reboot, and differences from host/ --------------
+
+test_report_says_a_reboot_is_needed_with_its_date_and_packages() {
+  host_check_says 0 "No differences from host/."
+  reboot_needed_since 2026-10-18 linux-image-7.0.0-12-generic libc6 linux-image-7.0.0-12-generic
+  run_at 2026-10-20T07:00:00Z
+  messages report | grep -qx 'Reboot needed since 2026-10-18 (linux-image-7.0.0-12-generic, libc6)' \
+    || fail "report: $(messages report)" || return 1
+  assert_eq "$(message_count alerts)" 0 "alerts before 14 days"
+}
+
+test_reboot_line_without_a_package_list_still_has_its_date() {
+  host_check_says 0 "No differences from host/."
+  reboot_needed_since 2026-10-18
+  run_at 2026-10-20T07:00:00Z
+  messages report | grep -qx 'Reboot needed since 2026-10-18' || fail "report: $(messages report)"
+}
+
+test_no_reboot_or_host_config_line_when_neither_applies() {
+  app_working cms
+  host_check_says 0 "No differences from host/."
+  run_at 2026-10-20T07:00:00Z
+  messages report | grep -qE '^(Reboot|Host config)' && fail "report: $(messages report)" && return 1
+  assert_eq "$(message_count alerts)" 0 "alerts"
+}
+
+test_reboot_still_needed_after_14_days_alerts_once_and_again_after_it_clears() {
+  host_check_says 0 "No differences from host/."
+  reboot_needed_since 2026-10-06 linux-image-7.0.0-12-generic
+  run_at 2026-10-19T07:00:00Z
+  assert_eq "$(message_count alerts)" 0 "alerts after 13 days" || return 1
+  # Each later update needing a reboot rewrites the file; the first date seen stays.
+  touch -d 2026-10-15T05:00:00Z "$T/run/reboot-required"
+  run_at 2026-10-20T07:00:00Z
+  assert_eq "$(message_count alerts)" 1 "alerts after 14 days" || return 1
+  messages alerts | grep -q '^testbox: Reboot needed since 2026-10-06 (linux-image-7.0.0-12-generic), 14 days ago' \
+    || fail "alert: $(messages alerts)" || return 1
+  last_message report | grep -qx 'Reboot needed since 2026-10-06 (linux-image-7.0.0-12-generic)' \
+    || fail "report: $(last_message report)" || return 1
+  run_at 2026-10-20T08:00:00Z
+  run_at 2026-10-21T07:00:00Z
+  assert_eq "$(message_count alerts)" 1 "alerts the days after" || return 1
+
+  # The reboot clears /var/run, so the file goes.
+  rm "$T/run/reboot-required" "$T/run/reboot-required.pkgs"
+  run_at 2026-10-22T07:00:00Z
+  last_message report | grep -q '^Reboot' && fail "report after the reboot: $(last_message report)" && return 1
+  reboot_needed_since 2026-10-23
+  run_at 2026-10-23T07:00:00Z
+  run_at 2026-11-06T07:00:00Z
+  assert_eq "$(message_count alerts)" 2 "alerts after the next 14 days" || return 1
+  last_message alerts | grep -q '^testbox: Reboot needed since 2026-10-23, 14 days ago' || fail "alert: $(last_message alerts)"
+}
+
+test_report_counts_host_config_differences_but_not_extra_lines() {
+  host_check_says 1 "differs  /etc/docker/daemon.json  (changed)
+    --- /etc/docker/daemon.json (on the server)
+    +++ /etc/docker/daemon.json (in host/)
+    -x
+differs  swap  (/swapfile is not on)
+extra    /etc/ssh/sshd_config.d/50-cloud-init.conf  (not in host/)
+extra    /etc/sudoers.d/  (can't list it as deploy; run --check with sudo to see any files there)
+2 difference(s) from host/. To apply them: sudo bash /home/deploy/host/apply.sh"
+  run_at 2026-10-20T07:00:00Z
+  messages report | grep -qx 'Host config: 2 differences from the repo, run apply.sh --check' \
+    || fail "report: $(messages report)" || return 1
+  assert_eq "$(message_count alerts)" 0 "alerts"
+}
+
+test_host_check_that_fails_to_run_says_so() {
+  host_check_says 3 "apply.sh: couldn't finish; see above. This is not the whole story."
+  run_at 2026-10-20T07:00:00Z
+  messages report | grep -qx 'Host config: apply.sh --check failed to run (exit 3), see runner.log' \
+    || fail "report: $(messages report)" || return 1
+  grep -q "couldn't finish" "$T/runner/logs/runner.log" || fail "the check's output is not in the log"
+}
+
+test_host_check_that_never_ends_is_stopped_and_says_so() {
+  mkdir -p "$T/host"
+  echo 'sleep 600' > "$T/host/apply.sh"
+  # A timeout that stops the check at once, as the real one would after 10 minutes.
+  local real
+  real="$(command -v timeout)"
+  mkdir -p "$T/runner/bin"
+  cat > "$T/runner/bin/timeout" <<EOF
+#!/usr/bin/env bash
+for arg; do [[ "\$arg" == */apply.sh ]] && exit 124; done
+exec "$real" "\$@"
+EOF
+  chmod +x "$T/runner/bin/timeout"
+  run_at 2026-10-20T07:00:00Z
+  messages report | grep -qx 'Host config: apply.sh --check failed to run (still running after 10m), see runner.log' \
+    || fail "report: $(messages report)"
+}
+
+# The droplet predates host/ and the deploy doesn't ship it there.
+test_server_without_host_shows_neither_line_and_raises_nothing() {
+  app_working cms
+  reboot_needed_since 2026-09-01 linux-image-6.8.0-1-generic
+  run_at 2026-10-20T07:00:00Z
+  run_at 2026-10-21T07:00:00Z
+  assert_eq "$(message_count report)" 2 "reports" || return 1
+  messages report | grep -qE '^(Reboot|Host config)' && fail "report: $(messages report)" && return 1
+  assert_eq "$(message_count alerts)" 0 "alerts"
+}
+
+# The real apply.sh --check on a server whose Docker packages are held, as every server
+# set up from host/ has them: held packages are not a difference (ticket 28's bug), and
+# the image's own sshd drop-in is an extra line, not a difference.
+test_real_host_check_with_held_docker_packages() {
+  host_matching_the_repo
+  echo "PasswordAuthentication yes" > "$HOST_ROOT/etc/ssh/sshd_config.d/50-cloud-init.conf"
+  run_at 2026-10-20T07:00:00Z
+  last_message report | grep -q '^Host config' && fail "report on a matching server: $(last_message report)" && return 1
+  grep -q "^dpkg-query .*docker-ce$" "$STUB_LOG" || fail "the check never looked at Docker's packages" || return 1
+
+  echo '{}' > "$HOST_ROOT/etc/docker/daemon.json"
+  run_at 2026-10-21T07:00:00Z
+  last_message report | grep -qx 'Host config: 1 difference from the repo, run apply.sh --check' \
+    || fail "report: $(last_message report)"
+}
+
 run_tests "$@"
