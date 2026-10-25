@@ -25,12 +25,14 @@ This repository holds the machinery shared by every app on the box, and no app. 
   - `install-tools.sh`: installs pinned, checksum-checked age and rclone into `~/backup-runner/bin/`.
   - `install-cron.sh`: installs the runner's hourly crontab entry for `deploy`.
   - `install-command.sh`: installs the `backups` command for `deploy`.
+- `app-dns/`: deployed to `/home/deploy/app-dns/`. `app-dns.py` creates an app's missing DNS record when the app deploys (see [The app's DNS record](#the-apps-dns-record)), and `install.sh` installs it as the `app-dns` command for `deploy`.
 - `host/`: each server's base setup below Docker, copied to `/home/deploy/host/` and never run by the deploy (see [Server base setup](#server-base-setup)).
 - `tests/host/`: `host/`'s tests: `apply.sh` against a fake server root, `bootstrap.sh` in an `ubuntu:26.04` container, and the deploy's copy of `host/`. Never deployed.
 - `tests/backup-runner/`: the runner's tests (`test.sh`) and the helper commands' (`helpers-test.sh`), run in CI on a fake VPS (`fake-vps.sh`). Never deployed.
+- `tests/app-dns/`: `app-dns`'s tests (`test.sh`), against a fake Cloudflare API that records each request (`fake-cloudflare.py`), never the real one; and the deploy's steps that install it and the example app's that runs it (`deploy-test.sh`). Never deployed.
 - `staging/`: a throwaway Traefik against Let's Encrypt staging, used by `staging.yml` to prove certificate issuance. Never deployed.
 - `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up, and runs the backup runner's and `host/`'s tests.
-- `.github/workflows/build-and-deploy.yml`: runs CI, then, for each server in its list, rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH. Then it writes the runner's secrets (rclone config, age key, Discord webhooks), rsyncs `backup-runner/` to `/home/deploy/backup-runner/`, and installs its tools, crontab entry and `backups` command. Last, it rsyncs `host/` to `/home/deploy/host/`, without running it.
+- `.github/workflows/build-and-deploy.yml`: runs CI, then, for each server in its list, rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH. Then it writes the runner's secrets (rclone config, age key, Discord webhooks), rsyncs `backup-runner/` to `/home/deploy/backup-runner/`, and installs its tools, crontab entry and `backups` command. Last, it rsyncs `host/` to `/home/deploy/host/`, without running it, then writes the server's hostname for `app-dns`, rsyncs `app-dns/` to `/home/deploy/app-dns/` and installs the `app-dns` command.
 
 ## Server base setup
 
@@ -40,7 +42,7 @@ Everything below Docker on a server (SSH logins, Docker from its apt repository,
 
 Traefik requests one wildcard certificate, `flyindycenter.com` + `*.flyindycenter.com`, from Let's Encrypt using the DNS-01 challenge through Cloudflare, and serves it as the default certificate. Apps don't request their own. `tls=true` on a router is enough.
 
-The Cloudflare token is the repository secret `CF_DNS_API_TOKEN`, one token shared by every server. Every deploy writes it to `/home/deploy/traefik/.env` (mode 600, never in git), and Traefik reads it at every renewal. The deploy owns that file and rewrites it each run, so don't edit it on the server. To rotate the token, roll it in Cloudflare, update 1Password ("Traefik — Cloudflare DNS token") and the secret, then run **Build and Deploy** by hand. The token is scoped to Zone:DNS:Edit on the one zone and locked to an allow-list of IPs: a new server's IP goes on it before its Traefik can get the certificate.
+The Cloudflare token is the repository secret `CF_DNS_API_TOKEN`, one token shared by every server. Every deploy writes it to `/home/deploy/traefik/.env` (mode 600, never in git), and Traefik reads it at every renewal. [`app-dns`](#the-apps-dns-record) uses it too, to create a new app's record. The deploy owns that file and rewrites it each run, so don't edit it on the server. To rotate the token, roll it in Cloudflare, update 1Password ("Traefik — Cloudflare DNS token") and the secret, then run **Build and Deploy** by hand. The token is scoped to Zone:DNS:Edit on the one zone and locked to an allow-list of IPs: a new server's IP goes on it before its Traefik can get the certificate.
 
 ## Adding an app
 
@@ -66,7 +68,23 @@ networks:
 
 Router names (`myapp` above) must be unique across every app on the box. Keep databases and other internal services on the app's own network, not on `traefik-shared`. Don't publish ports on the host. Traefik reaches the container over the network.
 
-An app runs on one server, picked by that server's settings prefix in `SERVER` at the top of its [`build-and-deploy.yml`](examples/app/.github/workflows/build-and-deploy.yml) (`SERVER: VANDERBILT` reads `VANDERBILT_HOST` and the other three [settings](#deployment)). An org admin gives the app's repository access to those four settings, and its hostname's DNS record points at that server.
+An app runs on one server, picked by that server's settings prefix in `SERVER` at the top of its [`build-and-deploy.yml`](examples/app/.github/workflows/build-and-deploy.yml) (`SERVER: VANDERBILT` reads `VANDERBILT_HOST` and the other three [settings](#deployment)). An org admin gives the app's repository access to those four settings.
+
+### The app's DNS record
+
+A new app's hostname works from its first deploy, with no trip to Cloudflare. After `docker compose up -d`, the example workflow's **DNS record** step runs `~/.local/bin/app-dns --app <app>` on the server (by its full path: a command sent over SSH doesn't get `~/.local/bin` on `PATH`). It reads every hostname in the app's Traefik `Host()` rules (through `docker compose config`, so only services with `traefik.enable=true`), and for each one, in Cloudflare:
+
+| The hostname has | app-dns |
+| ---------------- | ------- |
+| No record of its own (a name only the `*.flyindycenter.com` wildcard answers has none) | Creates a DNS-only CNAME to the server's hostname, its `_HOST` setting (`alexandria.flyzid.org`) |
+| A CNAME to this server already | Does nothing |
+| Any other record: a CNAME elsewhere, an A record | Warns, naming where it points, and leaves it alone. The step still passes |
+
+It never changes or deletes a record. So **switching an app's DNS to another server during a move stays a step done by hand**, in the move's ticket, and a typo in a `Host()` rule can leave a stray record but can't take over another app's. Names outside the token's zone (`flyindycenter.com`) are skipped with a warning. A Cloudflare error fails the step with Cloudflare's message; the app is already up by then. On a server whose `_HOST` setting is an IP rather than a hostname, it warns and makes no records.
+
+It runs on the server because it uses Traefik's Cloudflare token (`~/traefik/.env`), which Cloudflare accepts only from the servers' IPs. docker-infrastructure's deploy installs it, from [`app-dns/`](app-dns/), and writes the server's hostname to `~/app-dns/server-host`. `app-dns <hostname>...` does the same for names given by hand, and `app-dns --help` explains it.
+
+**Opting out.** An app whose first visitor matters, such as Postiz, whose first sign-up owns it, wants its record made only after that first run: its owner signs up through a hosts-file line first, so nobody else can get there before them. Such an app leaves the **DNS record** step out of its workflow until its first run is done, and then either adds the step or makes the record by hand. Adding it later is safe: a record already pointing at the server is left as it is. Apps that already run, and are moving, add the step when they move; by then their record points at the new server, so the step does nothing.
 
 ## VPS layout
 
@@ -77,6 +95,7 @@ An app runs on one server, picked by that server's settings prefix in `SERVER` a
 | `/home/deploy/backup-runner/` | `deploy` | The backup runner, deployed from `backup-runner/`, plus `secrets/`, `bin/`, `state/` and `logs/` (not in git) |
 | `/home/deploy/backups/<app>/` | `deploy` | Staging area for one app's backup while the runner encrypts and uploads it. Emptied after each one |
 | `/home/deploy/host/` | `deploy` | The server's [base setup](#server-base-setup), deployed from `host/` for an admin to apply. Never run by the deploy |
+| `/home/deploy/app-dns/` | `deploy` | [`app-dns`](#the-apps-dns-record), deployed from `app-dns/`, plus `server-host`, the server's hostname, written by each deploy (not in git). `~/.local/bin/app-dns` runs it |
 
 On a server set up from `host/`, Docker comes from Docker's apt repository, its packages are held, and `apply.sh` creates `traefik-shared`. The rest of this section is about the droplet.
 
@@ -261,7 +280,7 @@ To run it by hand, as `deploy`: `bash ~/backup-runner/run-backups.sh`. It does e
 
 It runs on every push to `main`, and by hand from **Actions → Build and Deploy → Run workflow** (for example, to redeploy without a change).
 
-`ci.yml` runs on every pull request. It starts Traefik and the example app on a runner, then checks that Traefik stays up, loads `dynamic/`, redirects HTTP to HTTPS and routes the example app. The runner has no Cloudflare token, so its certificate request fails against Let's Encrypt staging. That's expected. It also runs `bash tests/traefik/token-test.sh`, which runs the deploy's and the staging check's token steps against a fake server: the file gets the token and mode 600, an empty secret fails before reaching the server, and the token is never printed.
+`ci.yml` runs on every pull request. It starts Traefik and the example app on a runner, then checks that Traefik stays up, loads `dynamic/`, redirects HTTP to HTTPS and routes the example app. The runner has no Cloudflare token, so its certificate request fails against Let's Encrypt staging. That's expected. It also runs `bash tests/traefik/token-test.sh`, which runs the deploy's and the staging check's token steps against a fake server: the file gets the token and mode 600, an empty secret fails before reaching the server, and the token is never printed. And it runs `app-dns`'s tests, `bash tests/app-dns/test.sh` and `bash tests/app-dns/deploy-test.sh` (Python 3, plus `docker compose` for the `--app` cases), against a fake Cloudflare API that records each request.
 
 `staging.yml` (**Actions → Staging certificate check**) runs the real pipeline without touching production. It uses the same secrets, SSH, rsync and `docker compose`, plus the real Cloudflare token, which it writes from the same secret into its own `~/traefik-staging/.env`, so it works on a new server before its first deploy. It starts a throwaway Traefik from `staging/` in `~/traefik-staging/` on the server, on `127.0.0.1:8443`. That Traefik asks Let's Encrypt **staging** for the wildcard using production's own `dynamic/tls.yml`, and the run passes once it serves a certificate covering `*.flyindycenter.com`. It then removes the container, volume and directory. Its `server` input picks the server to check, by settings prefix (default `VANDERBILT`). Run it before any change to certificate settings, and on a new server once its settings exist.
 
