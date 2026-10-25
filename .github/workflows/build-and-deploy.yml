@@ -208,3 +208,26 @@ jobs:
             bash ~/backup-runner/install-cron.sh
             bash ~/backup-runner/install-command.sh
           '
+
+      # ~/app-dns/server-host: the hostname app records become CNAMEs to, this server's
+      # <SERVER>_HOST setting (alexandria.flyzid.org). app-dns makes no records on a server
+      # whose setting is an IP.
+      - name: Write the server's hostname for app-dns
+        env:
+          HOST: ${{ vars[format('{0}_HOST', matrix.server)] }}
+        run: |
+          printf '%s\n' "$HOST" | ssh vps '
+            set -e
+            mkdir -p ~/app-dns
+            cat > ~/app-dns/server-host.tmp
+            mv ~/app-dns/server-host.tmp ~/app-dns/server-host
+          '
+
+      # app-dns, which an app's deploy runs on the box to create its hostname's DNS record
+      # with Traefik's token (see the README's "Adding an app"). --delete removes files
+      # dropped from app-dns/, but never server-host, which lives only on the box.
+      - name: Sync app-dns/ to ~/app-dns/
+        run: rsync -rlz --delete --exclude=/server-host app-dns/ vps:app-dns/
+
+      - name: Install the app-dns command
+        run: ssh vps 'bash ~/app-dns/install.sh'

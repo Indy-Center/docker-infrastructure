@@ -90,6 +90,19 @@ jobs:
           crontab -l
           [ "$(crontab -l | grep -c '# backup-runner$')" = 1 ]
 
+  # app-dns, the helper an app's deploy runs to create its DNS record, against a fake
+  # Cloudflare API: never the real one. See tests/app-dns/.
+  app-dns:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: app-dns against a fake Cloudflare
+        run: bash tests/app-dns/test.sh
+
+      - name: The deploy installs app-dns, and the example app runs it
+        run: bash tests/app-dns/deploy-test.sh
+
   # The server's base setup (host/). Nothing here touches the runner's own system: apply.sh
   # runs against a fake root, and bootstrap.sh in a container. See tests/host/.
   host:
