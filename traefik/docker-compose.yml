@@ -1,4 +1,5 @@
-# Deployed to /home/deploy/traefik/ on the VPS. /home/deploy/traefik/.env (not in git) holds CF_DNS_API_TOKEN.
+# Deployed to /home/deploy/traefik/ on the VPS. /home/deploy/traefik/.env (not in git) holds CF_DNS_API_TOKEN,
+# which every deploy writes from the repo secret of that name.
 name: traefik
 
 services:

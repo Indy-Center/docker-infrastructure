@@ -40,7 +40,7 @@ Everything below Docker on a server (SSH logins, Docker from its apt repository,
 
 Traefik requests one wildcard certificate, `flyindycenter.com` + `*.flyindycenter.com`, from Let's Encrypt using the DNS-01 challenge through Cloudflare, and serves it as the default certificate. Apps don't request their own. `tls=true` on a router is enough.
 
-The Cloudflare token (`CF_DNS_API_TOKEN`) is a runtime secret. It lives in `/home/deploy/traefik/.env` on each server, and Traefik reads it at every renewal. It never appears in this repository or in GitHub Actions. The token is scoped to Zone:DNS:Edit on the one zone and locked to an allow-list of IPs: a new server's IP goes on it before its Traefik can get the certificate.
+The Cloudflare token is the repository secret `CF_DNS_API_TOKEN`, one token shared by every server. Every deploy writes it to `/home/deploy/traefik/.env` (mode 600, never in git), and Traefik reads it at every renewal. The deploy owns that file and rewrites it each run, so don't edit it on the server. To rotate the token, roll it in Cloudflare, update 1Password ("Traefik — Cloudflare DNS token") and the secret, then run **Build and Deploy** by hand. The token is scoped to Zone:DNS:Edit on the one zone and locked to an allow-list of IPs: a new server's IP goes on it before its Traefik can get the certificate.
 
 ## Adding an app
 
@@ -72,7 +72,7 @@ An app runs on one server, picked by that server's settings prefix in `SERVER` a
 
 | Path | Owner | Purpose |
 | ---- | ----- | ------- |
-| `/home/deploy/traefik/` | `deploy` | This repository's deployed config, plus `.env` (not in git) |
+| `/home/deploy/traefik/` | `deploy` | This repository's deployed config, plus `.env` with the Cloudflare token, written by each deploy (not in git) |
 | `/home/deploy/apps/<app>/` | `deploy` | One directory per app, deployed by that app's workflow |
 | `/home/deploy/backup-runner/` | `deploy` | The backup runner, deployed from `backup-runner/`, plus `secrets/`, `bin/`, `state/` and `logs/` (not in git) |
 | `/home/deploy/backups/<app>/` | `deploy` | Staging area for one app's backup while the runner encrypts and uploads it. Emptied after each one |
@@ -257,13 +257,13 @@ To run it by hand, as `deploy`: `bash ~/backup-runner/run-backups.sh`. It does e
 
 ## Deployment
 
-`build-and-deploy.yml` calls `ci.yml` first and only deploys if it passes. It then deploys to each server in its `server:` list (`[VANDERBILT, …]`), by settings prefix, as a separate job: **add or drop a server in that list**. Every server gets the same Traefik, runner secrets, runner and tools. Each server's job has its own concurrency group, and one failing doesn't cancel the others. A server missing any of its four settings fails its own job at the first step, naming each missing setting, before anything reaches it. On each server it rsyncs `traefik/` into `/home/deploy/traefik/`, deleting files removed from the repo but never `.env`. Then it runs `docker compose up -d` over SSH and checks the container is still up 15 seconds later. `main` is protected, so changes go through a pull request with passing checks.
+`build-and-deploy.yml` calls `ci.yml` first and only deploys if it passes. It then deploys to each server in its `server:` list (`[VANDERBILT, …]`), by settings prefix, as a separate job: **add or drop a server in that list**. Every server gets the same Traefik, runner secrets, runner and tools. Each server's job has its own concurrency group, and one failing doesn't cancel the others. A server missing any of its four settings fails its own job at the first step, naming each missing setting, before anything reaches it, and so does an empty `CF_DNS_API_TOKEN`. On each server it writes `/home/deploy/traefik/.env` from that secret, then rsyncs `traefik/` into `/home/deploy/traefik/`, deleting files removed from the repo but never `.env`. Then it runs `docker compose up -d` over SSH and checks the container is still up 15 seconds later. `main` is protected, so changes go through a pull request with passing checks.
 
 It runs on every push to `main`, and by hand from **Actions → Build and Deploy → Run workflow** (for example, to redeploy without a change).
 
-`ci.yml` runs on every pull request. It starts Traefik and the example app on a runner, then checks that Traefik stays up, loads `dynamic/`, redirects HTTP to HTTPS and routes the example app. The runner has no Cloudflare token, so its certificate request fails against Let's Encrypt staging. That's expected.
+`ci.yml` runs on every pull request. It starts Traefik and the example app on a runner, then checks that Traefik stays up, loads `dynamic/`, redirects HTTP to HTTPS and routes the example app. The runner has no Cloudflare token, so its certificate request fails against Let's Encrypt staging. That's expected. It also runs `bash tests/traefik/token-test.sh`, which runs the deploy's and the staging check's token steps against a fake server: the file gets the token and mode 600, an empty secret fails before reaching the server, and the token is never printed.
 
-`staging.yml` (**Actions → Staging certificate check**) runs the real pipeline without touching production. It uses the same secrets, SSH, rsync and `docker compose`, plus the real Cloudflare token. It starts a throwaway Traefik from `staging/` in `~/traefik-staging/` on the server, on `127.0.0.1:8443`. That Traefik asks Let's Encrypt **staging** for the wildcard using production's own `dynamic/tls.yml`, and the run passes once it serves a certificate covering `*.flyindycenter.com`. It then removes the container, volume and directory. Its `server` input picks the server to check, by settings prefix (default `VANDERBILT`). Run it before any change to certificate settings, and on a new server once its settings exist.
+`staging.yml` (**Actions → Staging certificate check**) runs the real pipeline without touching production. It uses the same secrets, SSH, rsync and `docker compose`, plus the real Cloudflare token, which it writes from the same secret into its own `~/traefik-staging/.env`, so it works on a new server before its first deploy. It starts a throwaway Traefik from `staging/` in `~/traefik-staging/` on the server, on `127.0.0.1:8443`. That Traefik asks Let's Encrypt **staging** for the wildcard using production's own `dynamic/tls.yml`, and the run passes once it serves a certificate covering `*.flyindycenter.com`. It then removes the container, volume and directory. Its `server` input picks the server to check, by settings prefix (default `VANDERBILT`). Run it before any change to certificate settings, and on a new server once its settings exist.
 
 Organization secrets and variables (**Org Settings → Secrets and variables → Actions**), the same four for each server, named with its prefix. Access to each is limited to **Selected repositories**: this one, plus each app repository that runs on that server. Each deploy key can do anything `deploy` can on its server, and `deploy` is in the docker group.
 
@@ -284,6 +284,7 @@ Repository secrets and variables (**Settings → Secrets and variables → Actio
 
 | Name | Kind | Value |
 | ---- | ---- | ----- |
+| `CF_DNS_API_TOKEN` | secret | Traefik's Cloudflare DNS token, which every deploy writes to `/home/deploy/traefik/.env` ("Traefik — Cloudflare DNS token" in 1Password; see [Certificates](#certificates)) |
 | `INDY_CENTER_BACKUP_RUNNER_ACCESS_KEY_ID` | secret | Access Key ID of the "R2 backup runner" token (1Password) |
 | `INDY_CENTER_BACKUP_RUNNER_SECRET_ACCESS_KEY` | secret | Secret Access Key of the same token |
 | `INDY_CENTER_BACKUP_RUNNER_AGE_KEY` | secret | The age key: its `AGE-SECRET-KEY-1…` line, with or without the comment lines age-keygen writes above it ("Backup encryption key (age)" in 1Password) |

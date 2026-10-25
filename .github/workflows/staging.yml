@@ -65,6 +65,26 @@ jobs:
           cp traefik/dynamic/tls.yml out/dynamic/
           rsync -rlz --delete out/ vps:traefik-staging/
 
+      # The token production gets, from the same CF_DNS_API_TOKEN repo secret, written into
+      # ~/traefik-staging/.env the way the deploy writes ~/traefik/.env. So the check works
+      # on a new server before its first deploy, and never reads or writes production's file.
+      - name: Write the Cloudflare token
+        env:
+          SERVER: ${{ inputs.server }}
+          CF_DNS_API_TOKEN: ${{ secrets.CF_DNS_API_TOKEN }}
+        run: |
+          if [ -z "$CF_DNS_API_TOKEN" ]; then
+            echo "::error::Not set: CF_DNS_API_TOKEN. See the README's settings table; nothing was started on $SERVER"
+            exit 1
+          fi
+          printf 'CF_DNS_API_TOKEN=%s\n' "$CF_DNS_API_TOKEN" | ssh vps '
+            set -e
+            mkdir -p ~/traefik-staging
+            umask 077
+            cat > ~/traefik-staging/.env.tmp
+            mv ~/traefik-staging/.env.tmp ~/traefik-staging/.env
+          '
+
       - name: Start staging Traefik
         run: |
           ssh vps bash -s <<'EOF'
