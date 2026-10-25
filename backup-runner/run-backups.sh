@@ -230,7 +230,7 @@ send_report() {
   if has_cms; then
     check="$(printf '%-28s %s' "restore check" "$(cat "$STATE/restore-check" 2>/dev/null || echo "not run yet")")"$'\n'
   fi
-  post_discord report-webhook.url "**Backups for $DAY** (times UTC)
+  post_discord report-webhook.url "**Backups on $SERVER for $DAY** (times UTC)
 \`\`\`
 $(printf '%-16s %-10s %-17s %s' app result "last good" space)
 ${rows}total space: $(human "$total")
@@ -247,8 +247,10 @@ ping_status_page() {
     return
   fi
   # The secret goes in a header read from stdin, so it never appears in a command line.
+  # ?server= names this server, since the status page expects a ping from each.
   if printf 'Authorization: Bearer %s\n' "$(cat "$secret_file")" \
-    | curl -fsS --max-time 30 --retry 2 -o /dev/null -X POST -H @- "$(cat "$url_file")"; then
+    | curl -fsS --max-time 30 --retry 2 -o /dev/null -X POST -H @- \
+      --url-query "server=$SERVER" "$(cat "$url_file")"; then
     log "status page pinged"
   else
     log "status page ping failed"

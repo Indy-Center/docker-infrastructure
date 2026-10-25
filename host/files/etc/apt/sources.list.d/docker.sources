@@ -1,0 +1,8 @@
+# Managed by docker-infrastructure's host/ (apply.sh). Docker's own apt repository, for
+# this server's Ubuntu release: apply.sh fills in its codename from /etc/os-release.
+# Docker's packages are held: an admin upgrades them on purpose.
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: @VERSION_CODENAME@
+Components: stable
+Signed-By: /etc/apt/keyrings/docker.asc

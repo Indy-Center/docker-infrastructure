@@ -5,10 +5,6 @@ on:
     branches: [main]
   workflow_dispatch:
 
-concurrency:
-  group: deploy-production
-  cancel-in-progress: false
-
 permissions:
   contents: read
 
@@ -16,27 +12,49 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
+  # Runs once per server, each on its own: one failing never cancels or blocks another.
   build-and-deploy:
+    name: Deploy to ${{ matrix.server }}
     needs: ci # skipped if any check fails
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every server this repository deploys to, by the prefix of its four org settings
+        # (VANDERBILT_HOST and so on; see the README). Add or drop a server here. The
+        # runner's server name, in its report and alerts, is the prefix in lower case.
+        server: [VANDERBILT, ALEXANDRIA]
+    concurrency:
+      group: deploy-${{ matrix.server }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
+      # A server missing any of its four settings fails here, before anything reaches it.
       - name: Set up SSH
         env:
-          VANDERBILT_HOST: ${{ vars.VANDERBILT_HOST }}
-          VANDERBILT_DEPLOY_USER: ${{ vars.VANDERBILT_DEPLOY_USER }}
-          VANDERBILT_DEPLOY_SSH_KEY: ${{ secrets.VANDERBILT_DEPLOY_SSH_KEY }}
-          VANDERBILT_KNOWN_HOSTS: ${{ secrets.VANDERBILT_KNOWN_HOSTS }}
+          SERVER: ${{ matrix.server }}
+          HOST: ${{ vars[format('{0}_HOST', matrix.server)] }}
+          DEPLOY_USER: ${{ vars[format('{0}_DEPLOY_USER', matrix.server)] }}
+          DEPLOY_SSH_KEY: ${{ secrets[format('{0}_DEPLOY_SSH_KEY', matrix.server)] }}
+          KNOWN_HOSTS: ${{ secrets[format('{0}_KNOWN_HOSTS', matrix.server)] }}
         run: |
+          missing=""
+          for name in HOST DEPLOY_USER DEPLOY_SSH_KEY KNOWN_HOSTS; do
+            [ -n "${!name}" ] || missing+=" ${SERVER}_$name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Not set for $SERVER:$missing. See the README's settings table; nothing was deployed to $SERVER"
+            exit 1
+          fi
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$VANDERBILT_DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "$VANDERBILT_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           cat > ~/.ssh/config <<EOF
           Host vps
-            HostName $VANDERBILT_HOST
-            User $VANDERBILT_DEPLOY_USER
+            HostName $HOST
+            User $DEPLOY_USER
             IdentityFile ~/.ssh/deploy_key
             IdentitiesOnly yes
             StrictHostKeyChecking yes
@@ -126,15 +144,35 @@ jobs:
           printf '%s\n' "$REPORT_WEBHOOK" | write_secret report-webhook.url
           printf '%s\n' "$ALERT_WEBHOOK" | write_secret alert-webhook.url
 
+      # ~/backup-runner/server: the name the runner's report, alerts and status ping give
+      # this server, the matrix prefix in lower case (vanderbilt).
+      - name: Write the backup runner's server name
+        env:
+          SERVER: ${{ matrix.server }}
+        run: |
+          printf '%s\n' "${SERVER,,}" | ssh vps '
+            set -e
+            mkdir -p ~/backup-runner
+            cat > ~/backup-runner/server.tmp
+            mv ~/backup-runner/server.tmp ~/backup-runner/server
+          '
+
       # The backup runner: its scripts and schedule file into ~/backup-runner/. --delete
-      # removes files dropped from backup-runner/, but never the folders that live only on
-      # the box: secrets/, the runner's state/ and logs/, and bin/ (age and rclone).
+      # removes files dropped from backup-runner/, but never what lives only on the box:
+      # secrets/, the runner's state/ and logs/, bin/ (age and rclone), and server.
       # These come after the secrets, so cron never starts a runner that lacks them.
       - name: Sync backup-runner/ to ~/backup-runner/
         run: |
           rsync -rlz --delete \
             --exclude=/secrets/ --exclude=/state/ --exclude=/logs/ --exclude=/bin/ \
+            --exclude=/server \
             backup-runner/ vps:backup-runner/
+
+      # The server's base setup, so an admin can run `sudo bash ~deploy/host/apply.sh --check`
+      # against the merged version. The deploy only copies it: it never runs it, since
+      # changing the base system is an admin's job (see host/README.md).
+      - name: Sync host/ to ~/host/ (never run)
+        run: rsync -rlz --delete host/ vps:host/
 
       # Installs the pinned age and rclone into ~/backup-runner/bin (skipped when already
       # there), the hourly crontab entry that starts the runner, and the `backups`

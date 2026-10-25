@@ -5,6 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  # The server this app runs on, by the prefix of its four organization settings (VANDERBILT_HOST and so on;
+  # docker-infrastructure's README lists each server's). Moving the app to another server starts here.
+  SERVER: VANDERBILT
+
 concurrency:
   group: deploy-${{ github.event.repository.name }}
   cancel-in-progress: false
@@ -25,24 +30,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # VANDERBILT_HOST and VANDERBILT_DEPLOY_USER are organization variables, the key and known_hosts are organization
+      # <SERVER>_HOST and <SERVER>_DEPLOY_USER are organization variables, the key and known_hosts are organization
       # secrets; all four are limited to selected repositories.
-      # An org admin adds this repository to each of them before the first deploy.
+      # An org admin adds this repository to each of them before the first deploy. Until then this step fails,
+      # naming the settings it can't see.
       - name: Set up SSH
         env:
-          VANDERBILT_HOST: ${{ vars.VANDERBILT_HOST }}
-          VANDERBILT_DEPLOY_USER: ${{ vars.VANDERBILT_DEPLOY_USER }}
-          VANDERBILT_DEPLOY_SSH_KEY: ${{ secrets.VANDERBILT_DEPLOY_SSH_KEY }}
-          VANDERBILT_KNOWN_HOSTS: ${{ secrets.VANDERBILT_KNOWN_HOSTS }}
+          HOST: ${{ vars[format('{0}_HOST', env.SERVER)] }}
+          DEPLOY_USER: ${{ vars[format('{0}_DEPLOY_USER', env.SERVER)] }}
+          DEPLOY_SSH_KEY: ${{ secrets[format('{0}_DEPLOY_SSH_KEY', env.SERVER)] }}
+          KNOWN_HOSTS: ${{ secrets[format('{0}_KNOWN_HOSTS', env.SERVER)] }}
         run: |
+          missing=""
+          for name in HOST DEPLOY_USER DEPLOY_SSH_KEY KNOWN_HOSTS; do
+            [ -n "${!name}" ] || missing+=" ${SERVER}_$name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Not set, or this repository has no access:$missing"
+            exit 1
+          fi
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$VANDERBILT_DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "$VANDERBILT_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           cat > ~/.ssh/config <<EOF
           Host vps
-            HostName $VANDERBILT_HOST
-            User $VANDERBILT_DEPLOY_USER
+            HostName $HOST
+            User $DEPLOY_USER
             IdentityFile ~/.ssh/deploy_key
             IdentitiesOnly yes
             StrictHostKeyChecking yes

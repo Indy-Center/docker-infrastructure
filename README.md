@@ -1,6 +1,8 @@
 # docker-infrastructure
 
-The Traefik reverse proxy and backup runner for the Vanderbilt VPS. Traefik terminates TLS for `*.flyindycenter.com` and routes traffic to every app container on the box; the runner backs up every app's data to Cloudflare R2. GitHub Actions deploys both on push to `main`.
+The Traefik reverse proxy and backup runner for Indy Center's servers. Traefik terminates TLS for `*.flyindycenter.com` and routes traffic to every app container on its box; the runner backs up every app's data to Cloudflare R2. GitHub Actions deploys both to every server on push to `main`.
+
+Each server runs its own Traefik and runner. DNS decides which server answers each hostname, and each Traefik routes only the containers on its own box. Today that is the Vanderbilt VPS (a DigitalOcean droplet) and the new server beside it, while apps move across.
 
 [![Build and Deploy](https://github.com/Indy-Center/docker-infrastructure/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/Indy-Center/docker-infrastructure/actions/workflows/build-and-deploy.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -23,16 +25,22 @@ This repository holds the machinery shared by every app on the box, and no app. 
   - `install-tools.sh`: installs pinned, checksum-checked age and rclone into `~/backup-runner/bin/`.
   - `install-cron.sh`: installs the runner's hourly crontab entry for `deploy`.
   - `install-command.sh`: installs the `backups` command for `deploy`.
+- `host/`: each server's base setup below Docker, copied to `/home/deploy/host/` and never run by the deploy (see [Server base setup](#server-base-setup)).
+- `tests/host/`: `host/`'s tests: `apply.sh` against a fake server root, `bootstrap.sh` in an `ubuntu:26.04` container, and the deploy's copy of `host/`. Never deployed.
 - `tests/backup-runner/`: the runner's tests (`test.sh`) and the helper commands' (`helpers-test.sh`), run in CI on a fake VPS (`fake-vps.sh`). Never deployed.
 - `staging/`: a throwaway Traefik against Let's Encrypt staging, used by `staging.yml` to prove certificate issuance. Never deployed.
-- `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up, and runs the backup runner's tests.
-- `.github/workflows/build-and-deploy.yml`: runs CI, then rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH. Then it writes the runner's secrets (rclone config, age key, Discord webhooks), rsyncs `backup-runner/` to `/home/deploy/backup-runner/`, and installs its tools, crontab entry and `backups` command.
+- `.github/workflows/ci.yml`: starts Traefik against the config and checks the container stays up, and runs the backup runner's and `host/`'s tests.
+- `.github/workflows/build-and-deploy.yml`: runs CI, then, for each server in its list, rsyncs `traefik/` to `/home/deploy/traefik/` and runs `docker compose up -d` over SSH. Then it writes the runner's secrets (rclone config, age key, Discord webhooks), rsyncs `backup-runner/` to `/home/deploy/backup-runner/`, and installs its tools, crontab entry and `backups` command. Last, it rsyncs `host/` to `/home/deploy/host/`, without running it.
+
+## Server base setup
+
+Everything below Docker on a server (SSH logins, Docker from its apt repository, security updates, journald's cap, swap, UTC, the `/home/deploy` layout and `traefik-shared`) is in [`host/`](host/README.md): real config files, a `bootstrap.sh` an admin runs once as root on a fresh Ubuntu 26.04 server, and an `apply.sh` that makes a server match the files and is safe to run again. The setup is the same work on every server and should come out the same each time, so it lives in git rather than in someone's memory; an admin applies each change by hand, with `--check` first, rather than the deploy, because a bad SSH change applied with nobody watching could lock everyone out. The DigitalOcean droplet predates `host/` and was set up by hand.
 
 ## Certificates
 
 Traefik requests one wildcard certificate, `flyindycenter.com` + `*.flyindycenter.com`, from Let's Encrypt using the DNS-01 challenge through Cloudflare, and serves it as the default certificate. Apps don't request their own. `tls=true` on a router is enough.
 
-The Cloudflare token (`CF_DNS_API_TOKEN`) is a runtime secret. It lives in `/home/deploy/traefik/.env` on the VPS, and Traefik reads it at every renewal. It never appears in this repository or in GitHub Actions. The token is scoped to Zone:DNS:Edit on the one zone and locked to the VPS's IP.
+The Cloudflare token (`CF_DNS_API_TOKEN`) is a runtime secret. It lives in `/home/deploy/traefik/.env` on each server, and Traefik reads it at every renewal. It never appears in this repository or in GitHub Actions. The token is scoped to Zone:DNS:Edit on the one zone and locked to an allow-list of IPs: a new server's IP goes on it before its Traefik can get the certificate.
 
 ## Adding an app
 
@@ -58,6 +66,8 @@ networks:
 
 Router names (`myapp` above) must be unique across every app on the box. Keep databases and other internal services on the app's own network, not on `traefik-shared`. Don't publish ports on the host. Traefik reaches the container over the network.
 
+An app runs on one server, picked by that server's settings prefix in `SERVER` at the top of its [`build-and-deploy.yml`](examples/app/.github/workflows/build-and-deploy.yml) (`SERVER: VANDERBILT` reads `VANDERBILT_HOST` and the other three [settings](#deployment)). An org admin gives the app's repository access to those four settings, and its hostname's DNS record points at that server.
+
 ## VPS layout
 
 | Path | Owner | Purpose |
@@ -66,8 +76,11 @@ Router names (`myapp` above) must be unique across every app on the box. Keep da
 | `/home/deploy/apps/<app>/` | `deploy` | One directory per app, deployed by that app's workflow |
 | `/home/deploy/backup-runner/` | `deploy` | The backup runner, deployed from `backup-runner/`, plus `secrets/`, `bin/`, `state/` and `logs/` (not in git) |
 | `/home/deploy/backups/<app>/` | `deploy` | Staging area for one app's backup while the runner encrypts and uploads it. Emptied after each one |
+| `/home/deploy/host/` | `deploy` | The server's [base setup](#server-base-setup), deployed from `host/` for an admin to apply. Never run by the deploy |
 
-Everything lives under the deploy user's home folder because Docker on this VPS is the Canonical snap. Snap confinement stops both the `docker` CLI and the daemon from reading paths such as `/opt`, but allows non-hidden paths under `/home`. The snap's automatic updates would restart every container, so they are held (`snap refresh --hold docker`). Update Docker by hand in a quiet period with `snap refresh docker`.
+On a server set up from `host/`, Docker comes from Docker's apt repository, its packages are held, and `apply.sh` creates `traefik-shared`. The rest of this section is about the droplet.
+
+Everything lives under the deploy user's home folder because Docker on the droplet is the Canonical snap. Snap confinement stops both the `docker` CLI and the daemon from reading paths such as `/opt`, but allows non-hidden paths under `/home`. The snap's automatic updates would restart every container, so they are held (`snap refresh --hold docker`). Update Docker by hand in a quiet period with `snap refresh docker`.
 
 Docker network `traefik-shared` is created once, by hand (`docker network create traefik-shared`). Every compose project, this one included, treats it as `external: true`.
 
@@ -94,6 +107,8 @@ The **runner** (`backup-runner/run-backups.sh`) backs up every app in `/home/dep
 Each night it also updates the **media copy**, and each Sunday it runs the **restore check** (both below).
 
 A failed recipe, encryption or upload raises an **alert** in tech-team-alerts for that app, and the runner moves on to the next. Once a day, after the 07:00 UTC run, it posts the **backup report** to tech-team-notifications, then tells the status page the day's backups finished. The report lists each app's result, last good backup and space used, then each media bucket's file count and size in the media copy, then the last restore check's result.
+
+Every server's runner posts to the same two channels, so the report's title (`Backups on vanderbilt for 2026-10-20`) and each alert (`vanderbilt: Backup of …`) name the server, and the status page ping adds `?server=vanderbilt`. The name is the server's settings prefix in lower case, which the deploy writes to `~/backup-runner/server`; the box's own hostname is whatever the provider set, so it isn't used. A runner without that file says `unnamed server`.
 
 ### What an app ships
 
@@ -179,6 +194,7 @@ Each file is named for the UTC time of its run and the recipe's file, plus `.age
 | ---- | ---------- |
 | `~/backup-runner/secrets/` | The runner's secrets, readable only by `deploy` (folder 700, files 600). Source copies in 1Password |
 | `~/backup-runner/bin/` | The pinned `age`, `age-keygen` and `rclone`, installed by the deploy |
+| `~/backup-runner/server` | The server's name for the report, alerts and status ping (`vanderbilt`), written by the deploy |
 | `~/backup-runner/logs/runner.log` | Everything each run did, and all the recipes' output. At 5 MB it moves to `runner.log.1`, replacing the older one |
 | `~/backup-runner/state/` | Each app's latest result and last run hour, and the last restore check's, for the schedule and the report. Losing it means every app is backed up at the next run, and the restore check waits for Sunday |
 | `~/.local/bin/backups` | The `backups` command: runs `~/backup-runner/backups.sh` |
@@ -241,22 +257,28 @@ To run it by hand, as `deploy`: `bash ~/backup-runner/run-backups.sh`. It does e
 
 ## Deployment
 
-`build-and-deploy.yml` calls `ci.yml` first and only deploys if it passes. It rsyncs `traefik/` into `/home/deploy/traefik/`, deleting files removed from the repo but never `.env`. Then it runs `docker compose up -d` over SSH and checks the container is still up 15 seconds later. `main` is protected, so changes go through a pull request with passing checks.
+`build-and-deploy.yml` calls `ci.yml` first and only deploys if it passes. It then deploys to each server in its `server:` list (`[VANDERBILT, …]`), by settings prefix, as a separate job: **add or drop a server in that list**. Every server gets the same Traefik, runner secrets, runner and tools. Each server's job has its own concurrency group, and one failing doesn't cancel the others. A server missing any of its four settings fails its own job at the first step, naming each missing setting, before anything reaches it. On each server it rsyncs `traefik/` into `/home/deploy/traefik/`, deleting files removed from the repo but never `.env`. Then it runs `docker compose up -d` over SSH and checks the container is still up 15 seconds later. `main` is protected, so changes go through a pull request with passing checks.
 
 It runs on every push to `main`, and by hand from **Actions → Build and Deploy → Run workflow** (for example, to redeploy without a change).
 
 `ci.yml` runs on every pull request. It starts Traefik and the example app on a runner, then checks that Traefik stays up, loads `dynamic/`, redirects HTTP to HTTPS and routes the example app. The runner has no Cloudflare token, so its certificate request fails against Let's Encrypt staging. That's expected.
 
-`staging.yml` (**Actions → Staging certificate check**) runs the real pipeline without touching production. It uses the same secrets, SSH, rsync and `docker compose`, plus the real Cloudflare token. It starts a throwaway Traefik from `staging/` in `~/traefik-staging/` on the VPS, on `127.0.0.1:8443`. That Traefik asks Let's Encrypt **staging** for the wildcard using production's own `dynamic/tls.yml`, and the run passes once it serves a certificate covering `*.flyindycenter.com`. It then removes the container, volume and directory. Run it before any change to certificate settings.
+`staging.yml` (**Actions → Staging certificate check**) runs the real pipeline without touching production. It uses the same secrets, SSH, rsync and `docker compose`, plus the real Cloudflare token. It starts a throwaway Traefik from `staging/` in `~/traefik-staging/` on the server, on `127.0.0.1:8443`. That Traefik asks Let's Encrypt **staging** for the wildcard using production's own `dynamic/tls.yml`, and the run passes once it serves a certificate covering `*.flyindycenter.com`. It then removes the container, volume and directory. Its `server` input picks the server to check, by settings prefix (default `VANDERBILT`). Run it before any change to certificate settings, and on a new server once its settings exist.
 
-Organization secrets and variables (**Org Settings → Secrets and variables → Actions**). Access to each is limited to **Selected repositories**: this one, plus each app repository as it moves onto the pipeline. The deploy key can do anything `deploy` can, and `deploy` is in the docker group.
+Organization secrets and variables (**Org Settings → Secrets and variables → Actions**), the same four for each server, named with its prefix. Access to each is limited to **Selected repositories**: this one, plus each app repository that runs on that server. Each deploy key can do anything `deploy` can on its server, and `deploy` is in the docker group.
+
+`vanderbilt` is the DigitalOcean droplet, which runs every app until they move. `alexandria` is the new server, a Hostinger VPS at `alexandria.flyzid.org`.
 
 | Name | Kind | Value |
 | ---- | ---- | ----- |
-| `VANDERBILT_HOST` | variable | VPS hostname or IP |
+| `VANDERBILT_HOST` | variable | The droplet's hostname or IP |
 | `VANDERBILT_DEPLOY_USER` | variable | `deploy` |
-| `VANDERBILT_DEPLOY_SSH_KEY` | secret | Private key of the deploy user's key pair |
-| `VANDERBILT_KNOWN_HOSTS` | secret | The VPS's SSH host key line(s), so the runner can check it's talking to the real VPS |
+| `VANDERBILT_DEPLOY_SSH_KEY` | secret | Private key of the droplet's deploy user's key pair |
+| `VANDERBILT_KNOWN_HOSTS` | secret | The droplet's SSH host key line(s), so the runner can check it's talking to the real server |
+| `ALEXANDRIA_HOST` | variable | The new server's hostname or IP |
+| `ALEXANDRIA_DEPLOY_USER` | variable | `deploy` |
+| `ALEXANDRIA_DEPLOY_SSH_KEY` | secret | Private key of the new server's deploy user's key pair |
+| `ALEXANDRIA_KNOWN_HOSTS` | secret | The new server's SSH host key line(s) |
 
 Repository secrets and variables (**Settings → Secrets and variables → Actions**), used only by this repository's deploy:
 

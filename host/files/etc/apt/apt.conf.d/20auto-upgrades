@@ -1,0 +1,4 @@
+// Managed by docker-infrastructure's host/ (apply.sh). Refresh the package lists and run
+// unattended-upgrades every day; 52unattended-upgrades-indy-center says what it installs.
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";

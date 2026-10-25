@@ -28,6 +28,8 @@ setup() {
   age-keygen -o "$T/runner/secrets/age.key" 2>/dev/null
   echo "$url/report" > "$T/runner/secrets/report-webhook.url"
   echo "$url/alerts" > "$T/runner/secrets/alert-webhook.url"
+  # The server's name, which the deploy writes from build-and-deploy.yml's server list.
+  echo "testbox" > "$T/runner/server"
   : > "$T/schedule.conf"
   # One empty media bucket, so the media copy has something to copy and stays quiet.
   mkdir -p "$T/r2/test-media"
