@@ -180,6 +180,32 @@ jobs:
             mv ~/backup-runner/server.tmp ~/backup-runner/server
           '
 
+      # The status page's "backup finished" ping: its URL and secret beside the other secrets.
+      # Not to the droplet: it closes soon, and a server that has pinged once is alerted on
+      # every morning it doesn't. Skipped until the secret is set; the runner skips the ping
+      # until both files exist.
+      - name: Write the backup runner's status ping
+        if: matrix.server != 'VANDERBILT'
+        env:
+          PING_TOKEN: ${{ secrets.INDY_CENTER_BACKUP_RUNNER_STATUS_PING_TOKEN }}
+        run: |
+          if [ -z "$PING_TOKEN" ]; then
+            echo "::notice::INDY_CENTER_BACKUP_RUNNER_STATUS_PING_TOKEN is not set; skipping the status ping"
+            exit 0
+          fi
+          write_secret() {
+            ssh vps "
+              set -e
+              umask 077
+              mkdir -p ~/backup-runner/secrets
+              chmod 700 ~/backup-runner/secrets
+              cat > ~/backup-runner/secrets/$1.tmp
+              mv ~/backup-runner/secrets/$1.tmp ~/backup-runner/secrets/$1
+            "
+          }
+          printf '%s\n' 'https://status.flyindycenter.com/backup-finished' | write_secret status-ping.url
+          printf '%s\n' "$PING_TOKEN" | write_secret status-ping.secret
+
       # The backup runner: its scripts and schedule file into ~/backup-runner/. --delete
       # removes files dropped from backup-runner/, but never what lives only on the box:
       # secrets/, the runner's state/ and logs/, bin/ (age and rclone), and server.
