@@ -237,7 +237,7 @@ The secrets folder holds:
 | `age.key` | The age key that encrypts every backup and decrypts it for a restore. Its source copy is "Backups — age encryption key" in 1Password: **without it, every backup is unreadable** | The deploy |
 | `report-webhook.url` | Discord webhook "Backups" in tech-team-notifications, for the daily backup report | The deploy |
 | `alert-webhook.url` | Discord webhook "Backup alerts" in tech-team-alerts, for alerts | The deploy |
-| `status-ping.url`, `status-ping.secret` | The status page's "backup finished" endpoint and its secret, sent as `Authorization: Bearer <secret>`. Until both exist the ping is skipped | By hand, once the status page exists |
+| `status-ping.url`, `status-ping.secret` | The status page's "backup finished" endpoint and its secret, sent as `Authorization: Bearer <secret>`. Until both exist the ping is skipped | The deploy, ALEXANDRIA only, once `INDY_CENTER_BACKUP_RUNNER_STATUS_PING_TOKEN` is set (the same value as the status repo's `ENV_STATUS_PING_TOKEN`) |
 
 The deploy writes each file mode 600, so a rebuilt VPS gets them back from one deploy. A missing webhook file is logged and the message skipped, so backups still run without Discord.
 
@@ -316,6 +316,7 @@ Repository secrets and variables (**Settings → Secrets and variables → Actio
 | `INDY_CENTER_BACKUP_RUNNER_AGE_KEY` | secret | The age key: its `AGE-SECRET-KEY-1…` line, with or without the comment lines age-keygen writes above it ("Backups — age encryption key" in 1Password) |
 | `INDY_CENTER_BACKUP_RUNNER_REPORT_WEBHOOK` | secret | URL of Discord webhook "Backups" (1Password) |
 | `INDY_CENTER_BACKUP_RUNNER_ALERT_WEBHOOK` | secret | URL of Discord webhook "Backup alerts" (1Password) |
+| `INDY_CENTER_BACKUP_RUNNER_STATUS_PING_TOKEN` | secret | The status page's ping secret, the same value as `ENV_STATUS_PING_TOKEN` in `Indy-Center/status`. Optional: until it's set, the deploy skips the ping files. Written to ALEXANDRIA only |
 | `CLOUDFLARE_ACCOUNT_ID` | variable | Cloudflare account ID, the first part of the R2 endpoint (`https://<id>.r2.cloudflarestorage.com`) |
 
 The host and user are variables because neither is secret, and GitHub masks a secret's value everywhere it appears in logs. As a secret, `deploy` turned every `deploy/` path in every app's logs into `***/`.
